@@ -171,10 +171,13 @@ folder, and run:
 This builds Sonux and installs it for the current user under `~/.local`. It
 does not use `sudo` and does not install system packages.
 
-## Install a GitHub release
+## Planned GitHub release packages
 
-Once releases are enabled, download the package for your distribution from
-`https://github.com/Haxinpro/Sonux/releases`.
+> [!NOTE]
+> Prebuilt packages are not published yet. For now, install Sonux from a
+> downloaded source folder or clone the repository. When packages become
+> available, they will be published on the
+> [GitHub Releases page](https://github.com/Haxinpro/Sonux/releases).
 
 Fedora or openSUSE:
 
@@ -214,10 +217,36 @@ To uninstall the application while keeping its settings:
 
 ## Build dependencies
 
-Sonux currently targets Linux systems using PipeWire and WirePlumber 0.5 or
-newer. A source build needs Node.js/npm, Rust/Cargo, a C compiler, `pkg-config`,
-WebKitGTK 4.1, GTK 3, PipeWire development headers, libmysofa, FFTW, and
-Ayatana AppIndicator.
+Sonux targets Linux systems using PipeWire and WirePlumber 0.5 or newer.
+Package names vary between distributions, but the required components and
+their roles are:
+
+### Runtime requirements
+
+| Component | Purpose |
+| --- | --- |
+| PipeWire | Provides the native audio graph used by Sonux |
+| PipeWire PulseAudio compatibility (`pipewire-pulse`) | Lets PulseAudio applications and `pactl` communicate with PipeWire |
+| WirePlumber 0.5 or newer | Manages PipeWire devices, links, and routing rules |
+| `pactl` (`pulseaudio-utils` on Debian-based systems) | Provides the automatic fallback audio backend |
+| GTK 3 and WebKitGTK 4.1 | Display the Tauri desktop interface |
+| libmysofa | Loads the bundled Aalto HRTF data for spatial audio |
+| FFTW, single-precision library | Performs real-time spatial-audio convolution |
+| Ayatana AppIndicator | Provides the desktop tray indicator |
+
+### Source-build toolchain
+
+| Component | Requirement |
+| --- | --- |
+| Node.js and npm | Node.js 20.19+ on the Node 20 line, or Node 22.12+ |
+| Rust and Cargo | Rust 1.77 or newer |
+| C build tools | A C compiler, linker, and `pkg-config` |
+| Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |
+
+These are system dependencies, so install them through your distribution's
+package manager. The JavaScript packages listed in
+[`package-lock.json`](package-lock.json) are installed automatically by
+`npm ci`; they do not need to be installed individually or globally from npm.
 
 On Arch Linux and derivatives:
 
@@ -225,10 +254,12 @@ On Arch Linux and derivatives:
 sudo pacman -S --needed base-devel nodejs npm rust pkgconf webkit2gtk-4.1 pipewire libmysofa fftw libayatana-appindicator
 ```
 
-On Ubuntu 24.04 and compatible Debian-based distributions:
+On Ubuntu 24.04 and compatible Debian-based distributions, first make sure a
+compatible Node.js and Rust toolchain is installed, then install the native
+build dependencies:
 
 ```bash
-sudo apt install build-essential curl nodejs npm cargo pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev libmysofa-dev libfftw3-dev
+sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev libmysofa-dev libfftw3-dev
 ```
 
 Development commands:
@@ -239,6 +270,45 @@ npm run tauri dev
 npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+## Disk usage and build cleanup
+
+The downloaded project itself contains about 14 MiB of tracked source and
+asset files. Building uses considerably more temporary disk space. The
+following figures were measured on the CachyOS development system after both
+release and development checks; exact sizes vary by toolchain and distribution.
+
+| Generated content | Observed size | When it is created |
+| --- | ---: | --- |
+| `node_modules` | About 180 MiB | `npm ci` |
+| `dist` | About 5 MiB | Frontend production build |
+| `target/release` | About 3.7 GiB | Release build and packaging |
+| `target/debug` | About 9.1 GiB | Development builds, tests, and linting |
+| Final Sonux binary | About 33 MiB | Release build |
+| Current `.deb` package | About 18 MiB | Debian package build |
+
+A normal release-only installation may use several GiB while compiling.
+Development commands can increase that substantially because Cargo keeps
+incremental build artifacts for faster future builds.
+
+After Sonux has been installed, its project-local build files can be removed:
+
+```bash
+./clean-builds.sh
+```
+
+The script displays the exact paths and asks for confirmation. It removes only
+`target`, `node_modules`, `dist`, and `src-tauri/gen` inside that Sonux checkout.
+The installed application, source files, and settings under `~/.config/sonux`
+are kept. A later `./install.sh` run recreates everything needed for another
+build.
+
+> [!WARNING]
+> Run the cleanup script from the Sonux checkout and review the displayed paths
+> before confirming. Do not replace its project-local paths with `/`, `~`,
+> `..`, wildcards, shared build directories, or directories belonging to other
+> projects. If you have customized the build directories or replaced them with
+> links, inspect `clean-builds.sh` before using it.
 
 Configuration is stored as JSON under `~/.config/sonux`.
 
