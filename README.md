@@ -4,10 +4,10 @@
 
 > [!IMPORTANT]
 > **AI-assisted development disclosure:** I maintain Sonux and have used
-> OpenAI Codex while developing it. Codex has assisted with implementation and
-> code review, documentation, testing, release packaging, and licensing and
-> redistribution checks. I make the final project decisions and take
-> responsibility for what I publish.
+> OpenAI Codex for implementation support, code review, documentation, testing,
+> release packaging, and licensing and redistribution checks. I choose which
+> suggested changes are included; Codex does not independently maintain or
+> publish the project.
 
 > [!CAUTION]
 > **Security and third-party software:** I recommend reviewing Sonux itself,
