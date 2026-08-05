@@ -4,10 +4,10 @@
 
 > [!IMPORTANT]
 > **AI-assisted development disclosure:** I maintain Sonux and have used
-> OpenAI Codex while developing it. Codex has helped me with code review and
-> implementation, documentation, testing, release packaging, and reviewing
-> redistribution and licensing requirements. I make the final project
-> decisions and take responsibility for what I publish.
+> OpenAI Codex while developing it. Codex has assisted with implementation and
+> code review, documentation, testing, release packaging, and licensing and
+> redistribution checks. I make the final project decisions and take
+> responsibility for what I publish.
 
 > [!CAUTION]
 > **Security and third-party software:** I recommend reviewing Sonux itself,
@@ -21,7 +21,7 @@ Sonux is a Linux-native gaming audio router and mixer built on PipeWire.
 It provides per-application channels, recordable mixes, microphone processing,
 parametric EQ, and optional 7.1-to-binaural spatial audio.
 
-Sonux is a modified version of [Sink](https://github.com/NC1107/sink). See
+Sonux builds on [Sink](https://github.com/NC1107/sink). See
 [ATTRIBUTION.md](ATTRIBUTION.md) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 for upstream and bundled-asset notices.
 
@@ -33,43 +33,35 @@ SteelSeries.
 I originally built Sonux as a small personal learning project because I liked
 how SteelSeries Sonar worked on Windows and wanted a similar experience on
 Linux. Sink was the closest visually pleasing alternative I found, but it was
-missing some of the settings I wanted. That encouraged me to learn from it and
-expand it for my own setup.
+missing some settings I wanted. Sonux would not exist without Sink: most of the
+credit for the original application and its foundation belongs to its creator,
+NC1107. My work expands that foundation with the controls and audio features I
+wanted from a Sonar-like Linux application.
 
-Sonux would not exist without [Sink](https://github.com/NC1107/sink). Most of
-the credit for the original application and its foundation belongs to Sink and
-its creator, NC1107. My work has focused on expanding that foundation with the
-controls and audio features I wanted from a Sonar-like Linux application.
+There is no fixed release schedule. I may update Sonux from time to time and
+intend to prioritize known security issues and serious bugs, but users should
+not expect continuous feature development or guaranteed support.
 
-Sonux is primarily a personal project without a fixed release schedule. I may
-update it from time to time and intend to prioritize known security issues and
-serious bugs, but users should not expect continuous feature development or
-guaranteed support.
-
-Forking is welcomed and encouraged. Feel free to adapt Sonux to your own audio
-setup, experiment with its processing, or continue development in a direction
-that suits you. Please retain the required GPL and third-party notices when
-redistributing a fork.
+Forks are welcome. Feel free to adapt Sonux to your audio setup or continue its
+development in another direction. Please retain the required GPL and
+third-party notices when redistributing a fork.
 
 ## Distribution compatibility
 
-Sonux is developed and tested on CachyOS. Other distributions listed below
-have not yet been tested by me, so their presence in this table is not a
-compatibility guarantee. They are included to show the intended Linux targets
-and their likely installation route.
+Only CachyOS has been tested. The other rows show intended Linux targets and
+planned package formats, not guaranteed compatibility.
 
 | Distribution | Test status | Intended installation route |
 | --- | --- | --- |
 | CachyOS | Tested — built and run on CachyOS | Build from source with `./install.sh` |
 | Arch Linux, Manjaro, EndeavourOS | Not yet tested | Build from source; release package planned |
-| Ubuntu, Debian, Linux Mint | Not yet tested | Build from source; `.deb` release planned |
-| Fedora | Not yet tested | Build from source; `.rpm` release planned |
-| openSUSE | Not yet tested | Build from source; `.rpm` release planned |
+| Ubuntu 26.04+; Debian/Mint with WirePlumber 0.5+ | Not yet tested | Build from source; `.deb` release planned |
+| Fedora, openSUSE | Not yet tested | Build from source; `.rpm` release planned |
 | Other PipeWire-based distributions | Not yet tested | Source build or AppImage, when available |
 
-Regardless of distribution, Sonux requires PipeWire with PulseAudio
-compatibility and WirePlumber 0.5 or newer. Reports and fixes from users of
-other distributions are welcome.
+All distributions require PipeWire with PulseAudio compatibility and
+WirePlumber 0.5 or newer. Reports and fixes for other distributions are
+welcome.
 
 ## Features
 
@@ -104,17 +96,155 @@ Sonux uses a conventional stereo downmix so channels are not silently lost.
 
 ![Sonux mixer with master, application, and microphone channels](docs/screenshots/sonux-mixer.png)
 
-### Game equalizer and spatial audio
+### Game equalizer
 
 ![Sonux game channel equalizer and spatial audio controls](docs/screenshots/sonux-game-equalizer.png)
 
-### Spatial audio controls
+### Spatial audio
 
 ![Sonux 7.1 virtual speaker layout and spatial audio controls](docs/screenshots/sonux-spatial-audio.png)
 
 ### Microphone processing
 
 ![Sonux microphone equalizer and processing controls](docs/screenshots/sonux-microphone.png)
+
+## Installation
+
+Current installations build Sonux from source and require the dependencies in
+the next section.
+
+### From a downloaded folder
+
+Open a terminal in the extracted folder and run:
+
+```bash
+./install.sh
+```
+
+This builds Sonux and installs it for the current user under `~/.local`. It
+does not use `sudo` and does not install system packages.
+
+### From GitHub
+
+```bash
+git clone https://github.com/Haxinpro/Sonux.git && cd Sonux && ./install.sh
+```
+
+### Uninstall
+
+Run this from the same source folder. The installed application is removed,
+but its settings are kept.
+
+```bash
+./uninstall.sh
+```
+
+Configuration is stored as plain JSON under `~/.config/sonux`.
+
+### Planned prebuilt packages
+
+> [!NOTE]
+> Prebuilt packages are not published yet. When available, find them on the
+> [GitHub Releases page](https://github.com/Haxinpro/Sonux/releases).
+
+| Format | Intended systems | Installation command |
+| --- | --- | --- |
+| `.rpm` | Fedora, openSUSE | `sudo dnf install ./Sonux-*.x86_64.rpm` |
+| `.deb` | Ubuntu 26.04+; compatible Debian/Mint releases | `sudo apt install ./Sonux_*_amd64.deb` |
+| Arch package | Arch Linux and derivatives | `sudo pacman -U ./sonux-bin-*-x86_64.pkg.tar.zst` |
+| AppImage | Other distributions | `chmod +x Sonux_*_amd64.AppImage && ./Sonux_*_amd64.AppImage` |
+
+## Requirements and build dependencies
+
+Package names vary between distributions. Sonux requires these components:
+
+### Runtime requirements
+
+| Component | Purpose |
+| --- | --- |
+| PipeWire | Provides the native audio graph used by Sonux |
+| PipeWire PulseAudio compatibility (`pipewire-pulse`) | Lets PulseAudio applications and `pactl` communicate with PipeWire |
+| WirePlumber 0.5 or newer | Manages PipeWire devices, links, and routing rules |
+| `pactl` (`pulseaudio-utils` on Debian-based systems) | Provides the automatic fallback audio backend |
+| GTK 3 and WebKitGTK 4.1 | Display the Tauri desktop interface |
+| libmysofa | Loads the bundled Aalto HRTF data for spatial audio |
+| FFTW, single-precision library | Performs real-time spatial-audio convolution |
+| Ayatana AppIndicator | Provides the desktop tray indicator |
+
+### Source-build toolchain
+
+| Component | Requirement |
+| --- | --- |
+| Node.js and npm | Node.js 20.19+ on the Node 20 line, or Node 22.12+ |
+| Rust and Cargo | Rust 1.77 or newer |
+| C build tools | A C compiler, linker, and `pkg-config` |
+| Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |
+
+These are system dependencies, so install them through your distribution's
+package manager. The JavaScript packages listed in
+[`package-lock.json`](package-lock.json) are installed automatically by
+`npm ci`; they do not need to be installed individually or globally from npm.
+
+On Arch Linux and derivatives:
+
+```bash
+sudo pacman -S --needed base-devel nodejs npm rust pkgconf webkit2gtk-4.1 pipewire pipewire-pulse wireplumber libmysofa fftw libayatana-appindicator
+```
+
+On Ubuntu 26.04 and compatible Debian-based distributions, first make sure a
+compatible Node.js and Rust toolchain is installed, then install the native
+build dependencies:
+
+```bash
+sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev libmysofa-dev libfftw3-dev pipewire-pulse wireplumber pulseaudio-utils
+```
+
+Ubuntu 24.04 provides WirePlumber 0.4 in its standard repositories, below
+Sonux's current 0.5 minimum, so it is not listed as compatible.
+
+Development commands:
+
+```bash
+npm ci
+npm run build
+npm run tauri dev
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+## Disk usage and build cleanup
+
+The project contains about 14 MiB of tracked source and asset files. The
+figures below were measured on the CachyOS development system after release and
+development checks; exact sizes vary by toolchain and distribution.
+
+| Item | Observed size | Notes |
+| --- | ---: | --- |
+| `node_modules` | About 180 MiB | `npm ci` |
+| `dist` | About 5 MiB | Frontend production build |
+| `src-tauri/gen` | About 0.3 MiB | Tauri-generated data |
+| `target/release` | About 3.7 GiB | Release build and packaging |
+| `target/debug` | About 9.1 GiB | Development builds, tests, and linting |
+| Final Sonux binary | About 33 MiB | Release build |
+| Generated `.deb` package | About 18 MiB | Debian package build |
+
+A release build can use several GiB while compiling, and development commands
+use more because Cargo retains incremental artifacts. After confirming that
+the installed application launches, users concerned about disk space may
+review the generated directories listed above. They are not needed by the copy
+installed under `~/.local` and are recreated by a later build.
+
+Use your preferred file manager or build-tool cleanup facilities to inspect
+and remove only generated data you recognize. If Sonux came from an extracted
+download and you do not plan to edit its source, the entire extracted folder
+can be moved to the desktop Trash after the installed application has been
+tested. Keep a Git clone if you want to pull updates or work on the project.
+
+> [!WARNING]
+> Do not remove directories that are shared with other projects, replaced by
+> links, or located outside the Sonux checkout. Review every selected path and
+> the complete contents of the desktop Trash before permanently deleting
+> anything.
 
 ## Included audio data and supporting libraries
 
@@ -158,161 +288,6 @@ from sample libraries that prohibit redistribution is included in Sonux.
 The interface bundles Fira Code under the SIL Open Font License and Material
 Symbols under Apache-2.0. A complete overview of bundled material and its
 licenses is available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Install from a downloaded folder
-
-Install the build dependencies listed below, open a terminal in the extracted
-folder, and run:
-
-```bash
-./install.sh
-```
-
-This builds Sonux and installs it for the current user under `~/.local`. It
-does not use `sudo` and does not install system packages.
-
-## Planned GitHub release packages
-
-> [!NOTE]
-> Prebuilt packages are not published yet. For now, install Sonux from a
-> downloaded source folder or clone the repository. When packages become
-> available, they will be published on the
-> [GitHub Releases page](https://github.com/Haxinpro/Sonux/releases).
-
-Fedora or openSUSE:
-
-```bash
-sudo dnf install ./Sonux-*.x86_64.rpm
-```
-
-Debian, Ubuntu, or Mint:
-
-```bash
-sudo apt install ./Sonux_*_amd64.deb
-```
-
-Arch Linux and derivatives:
-
-```bash
-sudo pacman -U ./sonux-bin-*-x86_64.pkg.tar.zst
-```
-
-Portable AppImage:
-
-```bash
-chmod +x Sonux_*_amd64.AppImage && ./Sonux_*_amd64.AppImage
-```
-
-## Install after cloning from GitHub
-
-```bash
-git clone https://github.com/Haxinpro/Sonux.git && cd Sonux && ./install.sh
-```
-
-To uninstall the application while keeping its settings:
-
-```bash
-./uninstall.sh
-```
-
-## Build dependencies
-
-Sonux targets Linux systems using PipeWire and WirePlumber 0.5 or newer.
-Package names vary between distributions, but the required components and
-their roles are:
-
-### Runtime requirements
-
-| Component | Purpose |
-| --- | --- |
-| PipeWire | Provides the native audio graph used by Sonux |
-| PipeWire PulseAudio compatibility (`pipewire-pulse`) | Lets PulseAudio applications and `pactl` communicate with PipeWire |
-| WirePlumber 0.5 or newer | Manages PipeWire devices, links, and routing rules |
-| `pactl` (`pulseaudio-utils` on Debian-based systems) | Provides the automatic fallback audio backend |
-| GTK 3 and WebKitGTK 4.1 | Display the Tauri desktop interface |
-| libmysofa | Loads the bundled Aalto HRTF data for spatial audio |
-| FFTW, single-precision library | Performs real-time spatial-audio convolution |
-| Ayatana AppIndicator | Provides the desktop tray indicator |
-
-### Source-build toolchain
-
-| Component | Requirement |
-| --- | --- |
-| Node.js and npm | Node.js 20.19+ on the Node 20 line, or Node 22.12+ |
-| Rust and Cargo | Rust 1.77 or newer |
-| C build tools | A C compiler, linker, and `pkg-config` |
-| Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |
-
-These are system dependencies, so install them through your distribution's
-package manager. The JavaScript packages listed in
-[`package-lock.json`](package-lock.json) are installed automatically by
-`npm ci`; they do not need to be installed individually or globally from npm.
-
-On Arch Linux and derivatives:
-
-```bash
-sudo pacman -S --needed base-devel nodejs npm rust pkgconf webkit2gtk-4.1 pipewire libmysofa fftw libayatana-appindicator
-```
-
-On Ubuntu 24.04 and compatible Debian-based distributions, first make sure a
-compatible Node.js and Rust toolchain is installed, then install the native
-build dependencies:
-
-```bash
-sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev libmysofa-dev libfftw3-dev
-```
-
-Development commands:
-
-```bash
-npm ci
-npm run tauri dev
-npm test
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-## Disk usage and build cleanup
-
-The downloaded project itself contains about 14 MiB of tracked source and
-asset files. Building uses considerably more temporary disk space. The
-following figures were measured on the CachyOS development system after both
-release and development checks; exact sizes vary by toolchain and distribution.
-
-| Generated content | Observed size | When it is created |
-| --- | ---: | --- |
-| `node_modules` | About 180 MiB | `npm ci` |
-| `dist` | About 5 MiB | Frontend production build |
-| `target/release` | About 3.7 GiB | Release build and packaging |
-| `target/debug` | About 9.1 GiB | Development builds, tests, and linting |
-| Final Sonux binary | About 33 MiB | Release build |
-| Current `.deb` package | About 18 MiB | Debian package build |
-
-A normal release-only installation may use several GiB while compiling.
-Development commands can increase that substantially because Cargo keeps
-incremental build artifacts for faster future builds.
-
-After confirming that the installed application launches, users concerned
-about disk space may review the Sonux checkout for build output, caches, and
-downloaded dependencies they no longer need. The main generated locations are
-`target` for Rust artifacts, `node_modules` for JavaScript dependencies,
-`dist` for the frontend build, and `src-tauri/gen` for Tauri-generated data.
-They are not required by the installed copy under `~/.local` and are recreated
-when needed by a later build.
-
-Use your preferred file manager or build-tool cleanup facilities to inspect
-and remove only generated data you recognize. If Sonux came from an extracted
-download and you do not plan to edit its source, the entire extracted folder
-can be moved to the desktop Trash after the installed application has been
-tested. Keep a Git clone if you want to pull updates or work on the project.
-
-> [!WARNING]
-> Do not remove directories that are shared with other projects, replaced by
-> links, or located outside the Sonux checkout. Review every selected path and
-> the complete contents of the desktop Trash before permanently deleting
-> anything. Sonux settings under `~/.config/sonux` are separate and should be
-> kept unless you intentionally want to reset them.
-
-Configuration is stored as JSON under `~/.config/sonux`.
 
 ## License
 
