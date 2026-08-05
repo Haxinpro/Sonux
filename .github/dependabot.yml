@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Bumps the SHA-pinned actions (with their version comments) so pinning
+  # doesn't freeze them forever.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

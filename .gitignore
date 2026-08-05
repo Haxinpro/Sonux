@@ -1,0 +1,30 @@
+node_modules/
+dist/
+target/
+src-tauri/gen/schemas/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+
+# Editor, OS, and test output
+.idea/
+.vscode/
+.DS_Store
+coverage/
+
+# The production HRTF is redistributable under CC-BY-4.0 and required to
+# compile. Keep only the audited dataset tracked in this runtime directory.
+third_party/spatial/runtime/*
+!third_party/spatial/runtime/NF_LIB_HRTF_LFE.sofa
+
+# Internal audit findings - local only, never committed
+technical_debt.md
+PROJECT_STATUS.md
