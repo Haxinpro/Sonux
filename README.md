@@ -291,24 +291,37 @@ A normal release-only installation may use several GiB while compiling.
 Development commands can increase that substantially because Cargo keeps
 incremental build artifacts for faster future builds.
 
-After Sonux has been installed, its project-local build files can be removed:
+After Sonux has been installed, inspect the generated directories from the
+root of the Sonux checkout:
 
 ```bash
-./clean-builds.sh
+du -sh ./target ./node_modules ./dist ./src-tauri/gen 2>/dev/null
 ```
 
-The script displays the exact paths and asks for confirmation. It removes only
-`target`, `node_modules`, `dist`, and `src-tauri/gen` inside that Sonux checkout.
-The installed application, source files, and settings under `~/.config/sonux`
-are kept. A later `./install.sh` run recreates everything needed for another
-build.
+Remove only the generated content you no longer want. Each command is separate
+so it is not necessary to delete all build data:
+
+```bash
+# Rust build artifacts; usually the largest directory
+rm -rf -- ./target
+
+# Downloaded JavaScript dependencies
+rm -rf -- ./node_modules
+
+# Generated frontend and Tauri output
+rm -rf -- ./dist ./src-tauri/gen
+```
+
+These commands do not uninstall the copy under `~/.local` or remove settings
+under `~/.config/sonux`. A later `./install.sh` run recreates the required
+dependencies and build output.
 
 > [!WARNING]
-> Run the cleanup script from the Sonux checkout and review the displayed paths
-> before confirming. Do not replace its project-local paths with `/`, `~`,
-> `..`, wildcards, shared build directories, or directories belonging to other
-> projects. If you have customized the build directories or replaced them with
-> links, inspect `clean-builds.sh` before using it.
+> Confirm with `pwd` that the terminal is in the Sonux repository before using
+> these commands. Keep the leading `./` paths exactly as shown and do not
+> replace them with `/`, `~`, `..`, wildcards, shared build directories, or
+> paths belonging to other projects. If any listed directory is intentionally
+> shared or replaced by a link, do not delete it.
 
 Configuration is stored as JSON under `~/.config/sonux`.
 
