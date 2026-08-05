@@ -1,0 +1,23 @@
+# Maintainer: Sonux contributors
+pkgname=sonux-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="PipeWire gaming audio router, mixer, and microphone processor"
+arch=('x86_64')
+url="https://github.com/Haxinpro/Sonux"
+license=('GPL-3.0-only')
+depends=('glibc' 'gcc-libs' 'glib2' 'gtk3' 'gdk-pixbuf2' 'cairo' 'dbus'
+         'webkit2gtk-4.1' 'libsoup3' 'libpipewire' 'pipewire-pulse'
+         'wireplumber' 'libmysofa' 'fftw' 'hicolor-icon-theme'
+         'libayatana-appindicator')
+provides=('sonux')
+conflicts=('sonux')
+options=('!strip' '!debug')
+source=('sonux.deb')
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir"
+  bsdtar -xf sonux.deb
+  bsdtar --no-same-owner -xf data.tar.* -C "$pkgdir"
+}

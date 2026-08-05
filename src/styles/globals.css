@@ -1,0 +1,3533 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Sonux design system, derived from the Sink project
+   (Echo tokens, dark theme) on top of a frameless Tauri window.
+   ============================================================ */
+
+/* Brand font - Fira Code (self-hosted) */
+@font-face {
+  font-family: "Fira Code";
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/FiraCode-Light.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Fira Code";
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/FiraCode-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Fira Code";
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/FiraCode-Medium.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Fira Code";
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/FiraCode-SemiBold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Fira Code";
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/FiraCode-Bold.ttf") format("truetype");
+}
+
+:root {
+  /* Surfaces */
+  --bg-main: #0a0a0b;
+  --bg-sidebar: #0f0f10;
+  --bg-chat: #141415;
+  --bg-surface: #1c1c1e;
+  --bg-surface-hover: #232326;
+  --bg-active: #27272a;
+
+  /* Text */
+  --fg-primary: #ededef;
+  --fg-secondary: #ababb0;
+  --fg-muted: #848490;
+
+  /* Accent (indigo) */
+  --accent: #5557e0;
+  --accent-hover: #818cf8;
+  --accent-light: rgba(85, 87, 224, 0.1);
+  --on-accent: #ffffff;
+
+  /* Floating layers (menus, popovers). Deliberately lighter than
+     --bg-surface: a menu opens on top of cards and strips that are already
+     --bg-surface, and matching them left the panel with no visible edge. */
+  --bg-popover: #2b2b31;
+  --bg-popover-hover: #38383f;
+
+  /* Lines */
+  --border: #27272a;
+  /* Edge for floating layers, light enough to read against a surface. */
+  --border-popover: #45454e;
+
+  /* Semantic */
+  --online: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+
+  /* Type */
+  --font-sans: "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-h2: 22px;
+  --fs-title: 14px;
+  --fs-body: 15px;
+  --fs-meta: 13px;
+  --fs-caption: 12px;
+
+  /* Spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 14px;
+  --sp-5: 16px;
+  --sp-6: 20px;
+  --sp-7: 24px;
+
+  /* Radius */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --r-pill: 9999px;
+
+  /* Strong enough to separate a panel from an equally dark surface below. */
+  --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  /* Transparent so the rounded window corners show through */
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  color: var(--fg-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 1.47;
+  -webkit-font-smoothing: antialiased;
+}
+
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+  line-height: 1;
+}
+
+/* ---------- Window (frameless CSD) ---------- */
+.window {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+/* Frameless GTK/Wayland windows do not always expose a generous native edge.
+   These transparent hit areas make every side and corner reliably draggable. */
+.resize-handle {
+  position: fixed;
+  z-index: 500;
+}
+.resize-n, .resize-s {
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.resize-n { top: 0; }
+.resize-s { bottom: 0; }
+.resize-e, .resize-w {
+  top: 8px;
+  bottom: 8px;
+  width: 7px;
+  cursor: ew-resize;
+}
+.resize-e { right: 0; }
+.resize-w { left: 0; }
+.resize-ne, .resize-nw, .resize-se, .resize-sw {
+  width: 14px;
+  height: 14px;
+}
+.resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+.resize-nw { top: 0; left: 0; cursor: nwse-resize; }
+.resize-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.resize-sw { left: 0; bottom: 0; cursor: nesw-resize; }
+
+/* ---------- Headerbar ---------- */
+.headerbar {
+  height: 48px;
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-3) 0 var(--sp-4);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+}
+.hb-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.hb-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+.hb-logo img {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  display: block;
+}
+.hb-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.hb-sub {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+  padding-left: var(--sp-3);
+  margin-left: var(--sp-1);
+  border-left: 1px solid var(--border);
+}
+.hb-spacer {
+  flex: 1;
+}
+/* window controls */
+.wctl {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: var(--sp-2);
+}
+.wbtn {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: var(--bg-surface);
+  color: var(--fg-secondary);
+  display: grid;
+  place-items: center;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+.wbtn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--fg-primary);
+}
+.wbtn.close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.wbtn .ms {
+  font-size: 16px;
+}
+
+/* ---------- Body / nav rail ---------- */
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.workspace-shell {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.workspace-shell > .content {
+  min-height: 0;
+}
+.workspace-bar {
+  flex: 0 0 46px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  background: var(--bg-main);
+  border-bottom: 1px solid var(--border);
+}
+.workspace-tabs {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-1);
+  padding-left: var(--sp-6);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.workspace-tab-tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4) 0 var(--sp-3);
+  background: var(--bg-main);
+}
+.workspace-tab {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.workspace-tab .ms {
+  font-size: 17px;
+}
+.workspace-tab:hover {
+  color: var(--fg-primary);
+}
+.workspace-tab.active {
+  color: var(--strip-accent, var(--accent-hover));
+}
+.workspace-tab.active::after {
+  content: "";
+  position: absolute;
+  left: var(--sp-3);
+  right: var(--sp-3);
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--strip-accent, var(--accent));
+}
+.rail {
+  width: 76px;
+  flex: 0 0 76px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-3) 0;
+  gap: 2px;
+}
+.rail-spacer {
+  flex: 1;
+}
+.nav-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: var(--sp-2) 0;
+  margin: 0 var(--sp-2);
+  border-radius: var(--r-lg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-item .ms {
+  font-size: 21px;
+}
+.nav-item .nav-label {
+  font-size: 9.5px;
+  letter-spacing: 0.2px;
+  font-weight: 500;
+}
+.nav-item:hover {
+  background: var(--bg-surface-hover);
+  color: var(--fg-secondary);
+}
+.nav-item.active {
+  color: var(--accent-hover);
+  background: var(--accent-light);
+}
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 22px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
+/* ---------- Content ---------- */
+.content {
+  /* Width of the readable column. Head and scroll body both centre on it so
+     a wide window doesn't stretch a row's controls half a screen from its
+     name; the head's bottom border still spans full width. */
+  --content-w: 900px;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+  min-height: 0;
+}
+
+.channel-page {
+  --content-w: 1260px;
+}
+.channel-screen-head {
+  align-items: center;
+}
+.channel-heading-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-lg);
+  background: var(--strip-accent-soft, var(--accent-light));
+  color: var(--strip-accent, var(--accent-hover));
+}
+.channel-heading-icon .ms {
+  font-size: 23px;
+}
+.channel-screen-head h1 {
+  color: var(--strip-accent, var(--fg-primary));
+}
+.channel-scroll {
+  padding-top: var(--sp-4);
+  padding-bottom: 56px;
+}
+.channel-controls-card {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(380px, 1.15fr) minmax(350px, 1.1fr) 126px;
+  gap: 1px;
+  padding: 0;
+  overflow: visible;
+}
+.channel-control-block {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  min-height: 82px;
+}
+.channel-control-block > div:first-child {
+  flex: 1;
+  min-width: 60px;
+}
+.channel-control-block + .channel-control-block {
+  border-left: 1px solid var(--border);
+}
+.channel-volume-control .hslider {
+  flex: 1 1 auto;
+  min-width: 230px;
+  max-width: none;
+}
+.channel-volume-control > div:first-child {
+  flex: 0 0 auto;
+  min-width: 62px;
+}
+.channel-volume-control .hs-val {
+  width: 112px;
+}
+.channel-preset-control .select {
+  max-width: 170px;
+}
+.channel-preset-control .eqm-preset-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-app-control {
+  justify-content: center;
+  padding-inline: var(--sp-3);
+}
+.channel-app-control > div:first-child {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.channel-controls-card .out-pill {
+  width: 260px;
+  max-width: 260px;
+}
+.channel-controls-card .out-pill span:not(.ms) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-controls-card > .channel-control-block > div > .select,
+.channel-controls-card > .channel-control-block > .select,
+.channel-controls-card > .channel-control-block > .menu-input {
+  background: var(--bg-surface);
+}
+.channel-action-active {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+.channel-action-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.channel-eq-card {
+  padding: var(--sp-5);
+  margin-top: var(--sp-6);
+  margin-bottom: var(--sp-6);
+}
+.eqm-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.channel-eq-card .eqm-curve-wrap {
+  max-width: none;
+}
+.channel-processing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+.channel-processing-card {
+  min-width: 0;
+  padding: var(--sp-3);
+}
+.processing-card-head {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+}
+.processing-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.processing-info {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--fg-muted);
+  background: transparent;
+  cursor: help;
+}
+.processing-info .ms {
+  font-size: 17px;
+}
+.processing-info:hover,
+.processing-info:focus-visible {
+  color: var(--fg-primary);
+  border-color: var(--border);
+  background: var(--bg-active);
+  outline: none;
+}
+.channel-output-card {
+  grid-column: 1 / -1;
+}
+.channel-limiter-card .dsp-row {
+  margin-left: 0;
+  padding-inline: var(--sp-3);
+  border-left: 0;
+}
+.processing-note {
+  margin: var(--sp-2) var(--sp-3) var(--sp-3);
+  color: var(--fg-muted);
+  font-size: var(--fs-caption);
+  line-height: 1.55;
+}
+.channel-mode-switch {
+  flex: 0 0 auto;
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-main);
+}
+.channel-mode-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+.channel-mode-button:hover {
+  color: var(--fg-primary);
+}
+.channel-mode-button.active {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.channel-mode-button .ms {
+  font-size: 16px;
+}
+.channel-processing-card .dsp-row {
+  margin-left: 64px;
+}
+.channel-processing-card .dsp-label {
+  width: 92px;
+  flex-basis: 92px;
+  white-space: nowrap;
+}
+.channel-processing-card.channel-limiter-card .dsp-row {
+  margin-left: 0;
+}
+.channel-processing-grid.has-spatial .spatial-processing-card {
+  grid-column: 1 / -1;
+  padding: 0;
+  overflow: hidden;
+}
+.spatial-head {
+  min-height: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: var(--sp-3) var(--sp-5);
+  border-bottom: 1px solid var(--border);
+}
+.processing-toggle-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.spatial-body {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(420px, 1.8fr);
+  align-items: center;
+  gap: var(--sp-7);
+  min-height: 330px;
+  padding: var(--sp-5) var(--sp-6);
+  transition: opacity 140ms ease;
+}
+.spatial-body.inactive {
+  opacity: 0.42;
+}
+.spatial-stage {
+  position: relative;
+  width: min(100%, 292px);
+  aspect-ratio: 1;
+  justify-self: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, color-mix(in srgb, var(--accent) 10%, transparent) 0 22%, transparent 23%),
+    var(--bg-main);
+}
+.spatial-stage::before,
+.spatial-stage::after {
+  content: "";
+  position: absolute;
+  inset: 15%;
+  border: 1px dashed color-mix(in srgb, var(--fg-muted) 28%, transparent);
+  border-radius: 50%;
+}
+.spatial-stage::after {
+  inset: 32%;
+}
+.spatial-listener {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  color: var(--fg-primary);
+  border: 1px solid var(--border-bright);
+  border-radius: 50%;
+  background: var(--bg-raised);
+  transform: translate(-50%, -50%);
+}
+.spatial-listener .ms {
+  font-size: 24px;
+}
+.spatial-speaker {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  min-width: 42px;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 6px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+.spatial-speaker:hover:not(:disabled) {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.spatial-speaker:disabled {
+  cursor: default;
+}
+.spatial-speaker .ms { font-size: 15px; }
+.spatial-speaker.fl { left: 26%; top: 14%; }
+.spatial-speaker.fc { left: 50%; top: 7%; }
+.spatial-speaker.fr { left: 74%; top: 14%; }
+.spatial-speaker.sl { left: 8%; top: 50%; }
+.spatial-speaker.sr { left: 92%; top: 50%; }
+.spatial-speaker.rl { left: 25%; top: 86%; }
+.spatial-speaker.lfe { left: 50%; top: 93%; }
+.spatial-speaker.rr { left: 75%; top: 86%; }
+.spatial-tuning {
+  min-width: 0;
+  transition: opacity 140ms ease;
+}
+.spatial-tuning-title {
+  margin-bottom: var(--sp-2);
+}
+.spatial-tuning.inactive {
+  opacity: 0.42;
+}
+.spatial-tuning .dsp-row {
+  margin: var(--sp-4) 0 0;
+}
+.spatial-tuning .dsp-value {
+  width: 92px;
+  flex-basis: 92px;
+}
+@media (max-width: 1120px) {
+  .channel-processing-grid {
+    grid-template-columns: 1fr;
+  }
+  .channel-controls-card {
+    grid-template-columns: 1fr;
+  }
+  .channel-control-block + .channel-control-block {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .spatial-body {
+    grid-template-columns: 1fr;
+  }
+  .spatial-stage {
+    width: 250px;
+  }
+}
+/* Form-like screens (mic, settings) read better in a tighter column. */
+.content.narrow {
+  --content-w: 720px;
+}
+.content.mic-content {
+  --content-w: 1260px;
+}
+.mic-controls-card {
+  grid-template-columns: minmax(230px, 0.78fr) minmax(360px, 1.12fr) minmax(330px, 1.08fr) minmax(250px, 0.88fr);
+}
+.mic-summary-gain {
+  flex: 1;
+  min-width: 220px;
+  max-width: 280px;
+}
+.mic-summary-gain .hslider {
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+.mic-input-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.mic-controls-card .mic-device-select {
+  width: 100%;
+  max-width: 280px;
+}
+.mic-name-control .menu-input {
+  min-width: 0;
+  width: 150px;
+}
+@media (max-width: 1120px) {
+  .mic-controls-card {
+    grid-template-columns: 1fr;
+  }
+  .mic-summary-gain {
+    max-width: none;
+  }
+}
+.mic-processing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+.mic-processing-card {
+  min-width: 0;
+  padding: var(--sp-3);
+}
+.mic-processing-card .dsp-row {
+  margin-left: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 0;
+}
+.mic-processing-card .dsp-label {
+  width: 76px;
+  flex-basis: 76px;
+}
+@media (max-width: 1050px) {
+  .mic-processing-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.screen-head {
+  flex: 0 0 auto;
+  padding: var(--sp-6) var(--sp-7) var(--sp-4);
+  padding-inline: max(var(--sp-7), calc((100% - var(--content-w)) / 2));
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.screen-head h1 {
+  font-size: var(--fs-h2);
+  font-weight: 700;
+  margin: 0;
+}
+.screen-head .sub {
+  font-size: var(--fs-meta);
+  color: var(--fg-muted);
+  padding-bottom: 3px;
+}
+.screen-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-end;
+}
+.channel-screen-head .channel-head-control {
+  width: 88px;
+  height: 38px;
+  box-sizing: border-box;
+  justify-content: center;
+}
+.channel-screen-head .audio-test-buttons {
+  min-width: 88px;
+  height: 38px;
+  box-sizing: border-box;
+}
+.channel-screen-head .audio-test {
+  margin-right: 0;
+}
+.channel-screen-head .audio-test-button {
+  width: auto;
+  min-width: 34px;
+  flex: 1 0 34px;
+}
+.audio-test {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-right: var(--sp-2);
+}
+.audio-test-label {
+  padding-left: 2px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.audio-test-buttons {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+.audio-test-button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  color: var(--fg-secondary);
+  background: var(--bg-main);
+  cursor: pointer;
+}
+.audio-test-button:hover:not(:disabled) {
+  color: var(--accent-hover);
+  background: var(--bg-surface-hover);
+}
+.audio-test-button.recording {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-main));
+}
+.audio-test-button.playing {
+  color: var(--accent-hover);
+  background: var(--accent-light);
+}
+.audio-test-button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.audio-test-button .ms {
+  font-size: 18px;
+}
+.screen-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--sp-6) var(--sp-7);
+  /* Matches .screen-head so rows line up under the title. The mixer opts out
+     with an inline padding of 0 - its strips centre themselves. */
+  padding-inline: max(var(--sp-7), calc((100% - var(--content-w)) / 2));
+}
+
+/* Shown when a list has nothing in it yet. */
+.empty-hint {
+  padding: var(--sp-7) var(--sp-6);
+  text-align: center;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+.screen-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.screen-scroll::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: 10px;
+  border: 3px solid var(--bg-main);
+}
+
+.out-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+}
+.out-pill:hover {
+  background: var(--bg-surface-hover);
+}
+.out-pill .ms {
+  font-size: 18px;
+  color: var(--fg-secondary);
+}
+.out-pill .ms.chev {
+  margin-left: var(--sp-1);
+  font-size: 16px;
+}
+
+/* ---------- Grouped mixer (Capture | Channels | Mixes) ---------- */
+.mix-scroll {
+  display: flex;
+  align-items: flex-start;
+  /* Centre the groups so a wide window isn't dead space on the right. The
+     `safe` keyword keeps the left edge reachable when they overflow instead
+     of clipping both sides; where it's unsupported the whole declaration is
+     dropped and this falls back to flex-start. */
+  justify-content: safe center;
+  padding: var(--sp-5) var(--sp-6) 44px;
+  height: 100%;
+  min-height: 0;
+  overflow-x: auto;
+}
+.mix-group {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  align-self: stretch;
+  max-height: 820px;
+}
+.group-head {
+  display: flex;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 var(--sp-2) var(--sp-3);
+}
+.group-head .gh-icon {
+  font-size: 15px;
+  color: var(--fg-muted);
+}
+.group-head .gh-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--fg-secondary);
+}
+.group-head .gh-count {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+}
+.gh-add-wrap {
+  margin-left: auto;
+  position: relative;
+}
+.gh-add {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.gh-add:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.gh-add .ms {
+  font-size: 16px;
+}
+.group-strips {
+  display: flex;
+  gap: var(--sp-3);
+  flex: 1;
+  min-height: 0;
+}
+.group-div {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 26px var(--sp-2) var(--sp-4);
+  max-height: 794px;
+}
+
+@keyframes stripIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.strip {
+  --strip-accent: var(--accent-hover);
+  --strip-accent-soft: var(--accent-light);
+  position: relative;
+  width: 190px;
+  flex: 0 0 190px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: var(--sp-4) var(--sp-3) var(--sp-3);
+  transition: border-color 0.12s;
+  animation: stripIn 0.24s ease;
+}
+.strip.channel-strip {
+  width: 190px;
+  flex-basis: 190px;
+}
+.strip.channel-strip .strip-apps {
+  height: 160px;
+  min-height: 160px;
+  max-height: 160px;
+  padding: var(--sp-3);
+}
+.strip.channel-strip .strip-app-chip {
+  padding: 4px 5px;
+  font-size: 9px;
+}
+.strip.channel-strip .strip-apps-label {
+  margin-bottom: 5px;
+  font-size: 9px;
+}
+.strip.channel-strip .strip-apps-empty {
+  display: grid;
+  min-height: 84px;
+  place-items: center;
+  padding: var(--sp-3);
+  line-height: 1.45;
+}
+.strip.muted {
+  opacity: 0.62;
+}
+/* delete ×: corner-anchored, appears on strip hover (design .strip-x) */
+.strip-x {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 4;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: var(--bg-active);
+  color: var(--fg-muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-family: inherit;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.strip:hover .strip-x {
+  opacity: 1;
+}
+.strip-x:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.strip-x .ms {
+  font-size: 14px;
+}
+/* drag-reorder grip: mirrors the delete ×, top-left */
+.strip-grip {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  z-index: 4;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: var(--bg-active);
+  color: var(--fg-muted);
+  display: grid;
+  place-items: center;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.strip:hover .strip-grip {
+  opacity: 1;
+}
+.strip-grip:hover {
+  background: var(--bg-surface-hover);
+  color: var(--fg-primary);
+}
+.strip-grip:active {
+  cursor: grabbing;
+}
+.strip-grip .ms {
+  font-size: 14px;
+}
+.strip.dragging {
+  opacity: 0.55;
+  border-style: dashed;
+  border-color: var(--accent);
+}
+.strip.app-drop-target {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 18px var(--accent-light);
+}
+.strip-name-editable {
+  cursor: text;
+  border-radius: var(--r-xs);
+  padding: 0 4px;
+}
+.strip-name-editable:hover {
+  background: var(--bg-surface-hover);
+}
+.strip-name-input {
+  width: 100%;
+  text-align: center;
+  padding: 4px 6px;
+  font-size: var(--fs-meta);
+}
+
+/* channel membership popover */
+.channel-apps-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--r-xs);
+}
+.channel-apps-icon img {
+  width: 18px;
+  height: 18px;
+}
+.channel-apps-icon .ms {
+  font-size: 16px;
+  color: var(--fg-muted);
+}
+.channel-apps-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-apps-off {
+  margin-left: auto;
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+}
+.channel-apps-eq {
+  margin-left: auto;
+}
+
+.strip-head {
+  display: flex;
+  height: 66px;
+  flex: 0 0 66px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+}
+.strip-title-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.strip-title-row .strip-name-input {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+.strip-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: var(--r-md);
+  display: grid;
+  place-items: center;
+  background: var(--strip-accent-soft);
+  color: var(--strip-accent);
+}
+.strip-icon .ms {
+  font-size: 21px;
+}
+.strip-name {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--strip-accent);
+  text-align: left;
+}
+.strip-accent-default {
+  --strip-accent: #8790ff;
+  --strip-accent-soft: rgba(112, 121, 255, 0.13);
+}
+.strip-accent-game {
+  --strip-accent: #3dd6aa;
+  --strip-accent-soft: rgba(61, 214, 170, 0.12);
+}
+.strip-accent-chat {
+  --strip-accent: #55b9e9;
+  --strip-accent-soft: rgba(85, 185, 233, 0.12);
+}
+.strip-accent-media {
+  --strip-accent: #ee5aa7;
+  --strip-accent-soft: rgba(238, 90, 167, 0.12);
+}
+.strip-accent-aux {
+  --strip-accent: #a976ef;
+  --strip-accent-soft: rgba(169, 118, 239, 0.13);
+}
+.strip-accent-mic {
+  --strip-accent: #eda640;
+  --strip-accent-soft: rgba(237, 166, 64, 0.13);
+}
+.strip-meta {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+  text-align: center;
+}
+.strip-meta-btn {
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.strip-meta-btn:hover {
+  color: var(--fg-primary);
+}
+.strip-preset-slot {
+  display: flex;
+  width: 100%;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  margin-top: var(--sp-3);
+}
+.strip-preset-anchor {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.strip-preset-button,
+.strip-preset-static {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-secondary);
+  background: var(--bg-main);
+  font: inherit;
+  font-size: 10px;
+}
+.strip-preset-button {
+  cursor: pointer;
+}
+.strip-preset-button:hover {
+  color: var(--fg-primary);
+  border-color: var(--fg-muted);
+  background: var(--bg-surface-hover);
+}
+.strip-preset-button span:not(.ms),
+.strip-preset-static span:not(.ms) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.strip-preset-button .ms,
+.strip-preset-static .ms {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.strip-body {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5) 0 var(--sp-4);
+  min-height: 220px;
+}
+
+/* fader */
+.fader {
+  position: relative;
+  width: 44px;
+  display: flex;
+  justify-content: center;
+}
+.fader-track {
+  position: relative;
+  width: 8px;
+  height: 100%;
+  background: var(--bg-active);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.fader-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+}
+.fader-cap {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, 50%);
+  width: 34px;
+  height: 18px;
+  border-radius: var(--r-sm);
+  background: var(--fg-primary);
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+  display: grid;
+  place-items: center;
+}
+.fader-cap::before {
+  content: "";
+  width: 16px;
+  height: 1.5px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 2px;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.25), 0 -3px 0 rgba(0, 0, 0, 0.25);
+}
+.fader-cap:active {
+  cursor: grabbing;
+}
+
+/* meter */
+.meter {
+  width: 10px;
+  height: 100%;
+  background: var(--bg-main);
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--border);
+}
+.meter-fill {
+  position: absolute;
+  inset: 0;
+  /* The zone colors are fixed to the TRACK (not the fill) and revealed by
+   * a clip-path, so green/amber/red are calibrated positions: green below
+   * −6 dBFS (70.8%), amber to −3 dBFS (84.1%), red above. Red genuinely
+   * means "about to clip" - it can't appear at the tip of a quiet bar. */
+  background: linear-gradient(
+    to top,
+    var(--online) 0%,
+    var(--online) 70.8%,
+    var(--warning) 71%,
+    var(--warning) 84%,
+    var(--danger) 84.5%,
+    var(--danger) 100%
+  );
+  border-radius: var(--r-pill);
+  clip-path: inset(100% 0 0 0);
+  transition: clip-path 0.06s linear;
+}
+.meter-peak {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--fg-primary);
+  opacity: 0.8;
+}
+/* −6 dBFS reference tick */
+.meter-tick {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--fg-muted);
+  opacity: 0.5;
+}
+
+/* meter column: clip light above, dBFS readout below */
+.vu-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+}
+.vu-col .meter {
+  flex: 1;
+  min-height: 0;
+}
+.vu-clip {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bg-active);
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+  transition: background 0.1s, box-shadow 0.1s;
+}
+.vu-clip.on {
+  background: var(--danger);
+  border-color: var(--danger);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+}
+.vu-db {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 20px;
+  text-align: center;
+}
+
+.strip-readout {
+  text-align: center;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--fg-primary);
+  margin-bottom: var(--sp-3);
+}
+.strip-readout .db {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-size: var(--fs-caption);
+}
+
+.strip-btns {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+.strip-apps {
+  height: 160px;
+  min-height: 160px;
+  max-height: 160px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2);
+  overflow-y: auto;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-main);
+}
+.strip-apps-passive .strip-app-chip {
+  cursor: default;
+}
+.strip-apps-passive .strip-apps-empty {
+  display: grid;
+  min-height: 108px;
+  place-items: center;
+  padding-inline: var(--sp-2);
+  line-height: 1.5;
+}
+.strip-apps-label {
+  margin-bottom: 5px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.strip-apps-empty {
+  padding: 5px 1px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  text-align: center;
+}
+.strip-app-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 5px;
+  border-radius: var(--r-xs);
+  color: var(--fg-secondary);
+  background: var(--bg-surface);
+  font-size: 9px;
+  cursor: grab;
+}
+.strip-app-chip + .strip-app-chip {
+  margin-top: 4px;
+}
+.strip-app-chip:hover {
+  color: var(--fg-primary);
+  background: var(--bg-surface-hover);
+}
+.strip-app-chip:active {
+  cursor: grabbing;
+}
+.strip-app-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 3px;
+}
+.strip-app-icon img {
+  width: 14px;
+  height: 14px;
+}
+.strip-app-icon .ms {
+  font-size: 13px;
+}
+.strip-app-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strip-app-live {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--online);
+}
+.sbtn {
+  flex: 1;
+  min-width: 0;
+  max-width: 44px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-main);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  transition: all 0.12s;
+}
+.sbtn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--fg-primary);
+}
+.sbtn.on-mute {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.sbtn.on-mon {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.strip-route {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+  /* uniform footer height so blank (mic/mix) and output-select (channel)
+   * footers keep every strip's divider and controls aligned */
+  height: 31px;
+  box-sizing: border-box;
+}
+.strip-route .ms {
+  font-size: 13px;
+}
+/* clickable variant: the per-strip output picker */
+.strip-route-btn {
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.12s;
+}
+.strip-route-btn:hover {
+  color: var(--fg-primary);
+}
+.strip-route-name {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Cards / rows (Apps screen) ---------- */
+.section-label {
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  margin: var(--sp-6) 0 var(--sp-3);
+}
+.section-label:first-child {
+  margin-top: 0;
+}
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: var(--sp-2);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  transition: background 0.12s;
+}
+.row + .row {
+  margin-top: 2px;
+}
+.row:hover {
+  background: var(--bg-surface-hover);
+}
+.row .ricon {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: var(--r-lg);
+  background: var(--bg-active);
+  color: var(--fg-secondary);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.row .ricon .ms {
+  font-size: 22px;
+}
+.row .ricon img {
+  width: 24px;
+  height: 24px;
+}
+.row .rmain {
+  min-width: 0;
+  flex: 1;
+}
+.row .rtitle {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row .rsub {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+  margin-top: 1px;
+}
+.row .rname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* per-app activity equalizer: animates while the stream is running */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 14px;
+  height: 12px;
+  flex: 0 0 14px;
+}
+.eq i {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--fg-muted);
+  opacity: 0.45;
+}
+.eq.on i {
+  background: var(--online);
+  opacity: 1;
+  animation: eq-bounce 0.9s ease-in-out infinite;
+}
+.eq.on i:nth-child(2) {
+  animation-delay: 0.25s;
+}
+.eq.on i:nth-child(3) {
+  animation-delay: 0.5s;
+}
+@keyframes eq-bounce {
+  0%,
+  100% {
+    height: 3px;
+  }
+  50% {
+    height: 11px;
+  }
+}
+
+/* Borderless icon action (IconButton.tsx). `.reveal` hides until the row is
+   hovered; `.boxed` is an always-visible 24px hit area with a hover fill. */
+.icon-btn {
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--r-xs);
+  display: grid;
+  place-items: center;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.icon-btn:hover {
+  color: var(--fg-primary);
+}
+.icon-btn.reveal {
+  opacity: 0;
+}
+.row:hover .icon-btn.reveal,
+.icon-btn.reveal:focus-visible {
+  opacity: 1;
+}
+.icon-btn.boxed {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+.icon-btn.boxed:hover {
+  background: var(--bg-active);
+}
+.icon-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--danger);
+}
+.row .rtrail {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.tag {
+  font-size: var(--fs-caption);
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  color: var(--fg-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tag .ms {
+  font-size: 13px;
+}
+
+/* select / dropdown */
+.select {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  font-family: inherit;
+}
+.select:hover {
+  border-color: var(--bg-active);
+}
+.select .ms {
+  font-size: 16px;
+  color: var(--fg-muted);
+}
+
+.shortcut-row {
+  cursor: default;
+}
+.shortcut-input {
+  width: 168px;
+  padding: 7px var(--sp-3);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-main);
+  color: var(--fg-primary);
+  font: inherit;
+  font-size: var(--fs-meta);
+}
+.shortcut-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.shortcut-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3) 64px;
+  color: var(--fg-muted);
+  font-size: var(--fs-caption);
+}
+.shortcut-buttons {
+  display: flex;
+  gap: var(--sp-2);
+}
+.shortcut-save {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* horizontal per-app volume slider */
+.hslider {
+  flex: 0 1 180px;
+  min-width: 110px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.hs-track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  cursor: pointer;
+}
+.hs-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  border-radius: var(--r-pill);
+}
+.hs-cap {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-primary);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+}
+.hs-val {
+  width: 44px;
+  text-align: right;
+  font-size: var(--fs-meta);
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* toggle switch */
+.toggle {
+  width: 38px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--bg-active);
+  position: relative;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+  flex: 0 0 38px;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--fg-secondary);
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle.on {
+  background: var(--accent);
+}
+.toggle.on::after {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+/* mic screen */
+.mic-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.mic-eq-card {
+  margin-bottom: var(--sp-6);
+}
+.mic-device-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.mic-device-select {
+  max-width: 420px;
+}
+/* settings: default-device picker shows the current device */
+.device-select {
+  max-width: 340px;
+}
+.device-select-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mic-device-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mic-gain-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.mic-gain-label {
+  font-size: var(--fs-meta);
+  color: var(--fg-secondary);
+  width: 42px;
+}
+.mic-gain-row .hslider {
+  flex: 1;
+}
+.mic-test-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.mic-test-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+.mic-test-button {
+  min-width: 84px;
+  justify-content: center;
+}
+.mic-test-button.active {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+
+/* mini level meter (mic screen) */
+.mini-meter {
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--bg-main);
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--border);
+}
+.mini-meter .mf {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(
+    to right,
+    var(--online),
+    var(--online) 70%,
+    var(--warning) 86%,
+    var(--danger)
+  );
+}
+
+.tag.live {
+  background: rgba(34, 197, 94, 0.14);
+  color: var(--online);
+}
+
+/* mic input strip accent (design: input-strip) */
+.strip.input-strip {
+  border-color: var(--border);
+  background: var(--bg-surface);
+}
+.strip-icon-mic {
+  background: var(--strip-accent-soft);
+  color: var(--strip-accent);
+}
+
+/* stream mix bus strip (record bus - amber accents) */
+.strip.bus-strip {
+  --strip-accent: var(--warning);
+  --strip-accent-soft: rgba(245, 158, 11, 0.12);
+  border-color: #46350f;
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.05), var(--bg-surface) 38%);
+}
+.strip.bus-strip.master-strip {
+  --strip-accent: #7582ff;
+  --strip-accent-soft: rgba(117, 130, 255, 0.13);
+  border-color: var(--border);
+  background: var(--bg-surface);
+}
+.master-strip .strip-icon-bus {
+  background: var(--strip-accent-soft);
+  color: var(--strip-accent);
+}
+.strip-icon-bus {
+  background: var(--strip-accent-soft);
+  color: var(--strip-accent);
+}
+
+
+/* inactive / ignored app history */
+.card-inactive {
+  opacity: 0.85;
+}
+.row-inactive .ricon {
+  opacity: 0.6;
+}
+.row-inactive .rname {
+  color: var(--fg-secondary);
+}
+.ignored-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-5);
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+  padding: var(--sp-1) 0;
+}
+.ignored-toggle:hover {
+  color: var(--fg-secondary);
+}
+.ignored-toggle .ms {
+  font-size: 16px;
+}
+
+/* popover menu - layered above modals (z 50): the EQ modal opens its
+   preset menu as a popover, which must never render under the scrim. */
+.menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 220px;
+  /* Long device names would otherwise stretch a menu across the window. */
+  max-width: min(420px, calc(100vw - 32px));
+  background: var(--bg-popover);
+  border: 1px solid var(--border-popover);
+  border-radius: var(--r-lg);
+  padding: var(--sp-2);
+  box-shadow: var(--shadow-popover);
+}
+/* Menu rows are real <button>s (see MenuItem.tsx) so menus are keyboard
+   reachable; the reset here strips UA button chrome. Static rows stay divs:
+   they host their own control (a Toggle) or are plain text. */
+.menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 8px var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  text-align: left;
+  color: var(--fg-primary);
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: var(--bg-popover-hover);
+}
+.menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.menu-item.sel {
+  color: var(--accent-hover);
+}
+.menu-item.static {
+  cursor: default;
+}
+.menu-item.static:hover {
+  background: none;
+}
+.menu-item.muted {
+  color: var(--fg-muted);
+}
+.menu-item .ms {
+  font-size: 18px;
+  color: var(--fg-muted);
+}
+.menu-item.sel .ms,
+.menu-item .ms.menu-check-on {
+  color: var(--accent-hover);
+}
+/* Takes the slack so trailing content (check, toggle, badge) sits right. */
+.menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-sep {
+  height: 1px;
+  background: var(--border-popover);
+  margin: var(--sp-2) 0;
+}
+.menu-save {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1);
+}
+.menu-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  outline: none;
+}
+.menu-input:focus {
+  border-color: var(--accent);
+}
+.select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* profile menu */
+/* Wrapper, not a menu row: the load button and the action buttons are
+   siblings so no button is ever nested inside another. */
+.profile-row {
+  display: flex;
+  align-items: center;
+}
+.profile-row-btn {
+  flex: 1;
+  min-width: 0;
+}
+.profile-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.profile-row-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  font-size: var(--fs-caption);
+  color: var(--warning);
+  opacity: 0.85;
+}
+/* Device names are unbounded; ellipsis rather than stretch the menu. */
+.profile-row-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.profile-row:hover .profile-row-actions {
+  opacity: 1;
+}
+/* profile trigger sub-panel */
+.trigger-panel {
+  margin: 2px 0 var(--sp-2) var(--sp-6);
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--border-popover);
+}
+.trigger-hint {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+  padding: var(--sp-1) var(--sp-3);
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  /* Between modal-scrim (50) and .menu (60): closes the popover on
+     outside-click even when the popover was opened from inside a modal. */
+  z-index: 55;
+}
+
+/* ---------- Modal dialogs ---------- */
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  /* Grow with the window up to --modal-w, shrink to fit narrow ones, and
+     never exceed the window height - scroll the panel instead. */
+  --modal-w: 380px;
+  width: min(var(--modal-w), calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: var(--sp-6);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+/* Title row with the close affordance; flex: 0 0 auto so it survives the
+   EQ panel turning its body into a flex column. */
+.modal-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.modal-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-title-lg, 16px);
+  font-weight: 600;
+}
+/* Pull the close button out to the panel's padding edge. */
+.modal-head .icon-btn {
+  margin-right: -4px;
+}
+.modal-text {
+  font-size: var(--fs-meta);
+  color: var(--fg-secondary);
+  line-height: 1.45;
+  margin: 0;
+}
+.modal-label {
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+.modal-btns {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  margin-top: var(--sp-2);
+}
+.modal-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-main);
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  padding: 8px var(--sp-5);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.modal-btn:hover {
+  background: var(--bg-surface-hover);
+}
+.modal-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.modal-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.modal-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.modal-btn.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.modal-btn.danger:hover {
+  filter: brightness(1.12);
+}
+
+/* ---------- Icon picker grid ---------- */
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: var(--sp-1);
+}
+.icon-cell {
+  aspect-ratio: 1;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.icon-cell .ms {
+  font-size: 19px;
+}
+.icon-cell:hover {
+  background: var(--bg-surface-hover);
+  color: var(--fg-primary);
+}
+.icon-cell.sel {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* clickable strip icon (opens the icon picker) */
+.strip-icon-btn {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s, color 0.12s;
+}
+.strip-icon-btn:hover {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+
+/* error banner */
+.error-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-7);
+  background: rgba(239, 68, 68, 0.12);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  font-size: var(--fs-meta);
+}
+.error-banner-msg {
+  flex: 1;
+  min-width: 0;
+}
+.error-banner-x {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.error-banner-x:hover {
+  background: rgba(239, 68, 68, 0.2);
+}
+.error-banner-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid rgba(252, 165, 165, 0.45);
+  border-radius: var(--r-sm);
+  color: #fee2e2;
+  background: rgba(127, 29, 29, 0.28);
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.error-banner-restart:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+.error-banner-x:focus-visible {
+  outline: 2px solid #fca5a5;
+  outline-offset: 1px;
+}
+
+/* Global hover tooltip (see components/Tooltip.tsx): replaces the native
+   `title` popups so timing and on-screen clamping are ours to control.
+   Positioned imperatively; sits above modals and menus. */
+.app-tooltip {
+  position: fixed;
+  z-index: 200;
+  max-width: 280px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-size: var(--fs-meta);
+  line-height: 1.35;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  white-space: normal;
+}
+.app-tooltip-info {
+  width: max-content;
+  max-width: min(380px, calc(100vw - 16px));
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+.app-tooltip-heading {
+  margin-bottom: var(--sp-2);
+  color: var(--fg-primary);
+  font-weight: 600;
+}
+.app-tooltip-copy {
+  color: var(--fg-secondary);
+}
+.app-tooltip-copy p {
+  margin: 0;
+}
+.app-tooltip-copy p + p {
+  margin-top: var(--sp-2);
+}
+
+/* DSP tuning sliders (mic processing card): inset under their stage's
+ * toggle row with a guide line, so parameters read as controls rather
+ * than blending into the stage descriptions. */
+.dsp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-left: 64px;
+  padding: 2px var(--sp-4) var(--sp-2) var(--sp-4);
+  border-left: 2px solid var(--border);
+}
+.dsp-row.disabled {
+  opacity: 0.42;
+}
+.dsp-row.disabled .hs-track,
+.dsp-row.disabled .hs-cap {
+  cursor: default;
+}
+.dsp-row.end-labels {
+  align-items: flex-end;
+}
+.dsp-range-column {
+  flex: 1;
+  min-width: 0;
+}
+.dsp-range-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.dsp-label {
+  width: 76px;
+  flex: 0 0 76px;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--fg-secondary);
+}
+.dsp-row .hs-track {
+  flex: 1;
+}
+.dsp-value {
+  width: 64px;
+  flex: 0 0 64px;
+  text-align: right;
+  font-size: var(--fs-caption);
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.dsp-default-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--fg-muted);
+  opacity: 0.55;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* greyed status tag (e.g. mic muted) */
+.tag.tag-off {
+  opacity: 0.55;
+}
+.tag.tag-off .ms {
+  color: var(--fg-muted);
+}
+
+/* mic screen body while the chain is switched off: visible but inert */
+.mic-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ---------- First-run tutorial ---------- */
+.ob-modal {
+  width: min(440px, calc(100vw - 48px));
+  min-height: 330px;
+}
+.ob-icon {
+  align-self: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-xl);
+  background: var(--accent-light);
+  color: var(--accent-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ob-icon .ms {
+  font-size: 30px;
+}
+.ob-body {
+  text-align: center;
+  min-height: 44px;
+}
+/* signal-flow diagram: pill nodes + arrows, colored like the mixer */
+.ob-flow {
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+}
+.ob-flow-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.ob-flow-branch {
+  /* start the tap under the Channels node */
+  padding-left: 86px;
+}
+.ob-flow-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  font-size: var(--fs-caption);
+  color: var(--fg-secondary);
+  white-space: nowrap;
+}
+.ob-flow-node .ms {
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+.ob-flow-node.is-channel {
+  border-color: #2e2e55;
+  color: var(--accent-hover);
+}
+.ob-flow-node.is-channel .ms {
+  color: var(--accent-hover);
+}
+.ob-flow-node.is-mix {
+  border-color: #46350f;
+  color: var(--warning);
+}
+.ob-flow-node.is-mix .ms {
+  color: var(--warning);
+}
+.ob-flow-arrow {
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+.ob-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: auto;
+  padding-top: var(--sp-2);
+}
+.ob-dots {
+  display: flex;
+  gap: 6px;
+}
+.ob-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.ob-dot.on {
+  background: var(--accent-hover);
+}
+.ob-choices {
+  display: flex;
+  gap: var(--sp-3);
+}
+.ob-choice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  border-radius: var(--r-xl);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--fg-primary);
+  text-align: center;
+  transition: border-color 0.12s, background 0.12s;
+}
+.ob-choice:hover {
+  border-color: var(--accent);
+  background: var(--bg-surface-hover);
+}
+.ob-choice .ms {
+  font-size: 26px;
+  color: var(--accent-hover);
+}
+.ob-choice-title {
+  font-weight: 600;
+  font-size: var(--fs-body);
+}
+.ob-choice-sub {
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+}
+
+/* divider inside popover menus */
+.menu-div {
+  height: 1px;
+  background: var(--border-popover);
+  margin: var(--sp-1) var(--sp-2);
+}
+
+/* version tag at the bottom of the nav rail */
+.rail-version {
+  text-align: center;
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: var(--sp-2) 0 var(--sp-1);
+  user-select: text;
+}
+
+/* mic screen tip line */
+.mic-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-lg);
+  border: 1px dashed var(--border);
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+}
+.mic-tip .ms {
+  font-size: 16px;
+  color: var(--warning);
+  flex: 0 0 auto;
+}
+.mic-tip a {
+  color: var(--accent-hover);
+}
+
+/* ---------- balance pill (ChatMix, lives in the workspace bar) ---------- */
+.balance-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.bal-side {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: none;
+  border: none;
+  color: var(--fg-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.bal-side:hover {
+  color: var(--fg-primary);
+  background: var(--bg-surface-hover);
+}
+.bal-side .ms {
+  font-size: 16px;
+}
+.bal-readout {
+  min-width: 76px;
+  color: var(--fg-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+.bal-track {
+  position: relative;
+  width: 110px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.bal-center {
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--fg-muted);
+  opacity: 0.5;
+  border-radius: 1px;
+}
+.bal-cap {
+  position: absolute;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--fg-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  transition: left 0.06s linear;
+}
+
+/* settings sub-row: indented dependent option (e.g. start minimized) */
+.row.row-sub {
+  margin-left: var(--sp-6);
+}
+.row.row-sub .ricon {
+  opacity: 0.7;
+}
+
+/* ---- Parametric EQ modal (eqm-) ---- */
+.sbtn.on-eq {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.modal.eqm-modal {
+  --modal-w: 860px;
+  /* The band list is the scroller, not the panel, so the curve stays put
+     while you work through the rows. */
+  overflow: hidden;
+}
+/* Everything above the list keeps its natural height; only the list flexes. */
+.modal.eqm-modal > * {
+  flex-shrink: 0;
+}
+.eqm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.eqm-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--fg-secondary);
+}
+.eqm-curve-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+}
+.eqm-curve {
+  width: 100%;
+  height: auto;
+  /* A wider window should buy more band rows, not a taller graph - past this
+     the plot stops growing and centres, and the freed height goes to the
+     list below. */
+  display: block;
+  /* Labels live in gutters outside the plot; the rect carries the frame. */
+  background: transparent;
+  touch-action: none;
+}
+.eqm-plot {
+  fill: var(--bg-main);
+  stroke: var(--border);
+  rx: 6px;
+}
+.eqm-curve.off {
+  opacity: 0.45;
+}
+.eqm-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.eqm-grid.zero {
+  stroke: var(--fg-secondary);
+  opacity: 0.5;
+}
+.eqm-grid.minor {
+  opacity: 0.4;
+}
+.eqm-grid.region {
+  stroke: var(--border);
+  opacity: 0.9;
+}
+.eqm-region {
+  fill: color-mix(in srgb, var(--bg-main) 68%, var(--bg-surface));
+  stroke: var(--border);
+  stroke-width: 0.7;
+}
+.eqm-region-label {
+  fill: var(--fg-secondary);
+  font-size: 7px;
+  font-weight: 600;
+  letter-spacing: 0.45px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  font-family: inherit;
+  user-select: none;
+}
+.eqm-axis-label {
+  fill: var(--fg-secondary);
+  font-size: 9px;
+  font-family: inherit;
+  user-select: none;
+}
+.eqm-axis-label.db {
+  text-anchor: end;
+  dominant-baseline: middle;
+}
+.eqm-line {
+  fill: none;
+  /* Neutral curve with per-band colored dots. */
+  stroke: var(--fg-primary);
+  stroke-width: 1.8;
+  opacity: 0.9;
+}
+.eqm-fill {
+  fill: var(--accent-light);
+  stroke: none;
+}
+.eqm-dot {
+  /* fill = the band's color (inline style). Gestures live on .eqm-hit
+     underneath, so the visible dot must not swallow pointer events. */
+  stroke: var(--bg-main);
+  stroke-width: 2;
+  pointer-events: none;
+}
+.eqm-dot.sel {
+  stroke: var(--fg-primary);
+}
+/* Oversized invisible target so the small dot is easy to grab. */
+.eqm-hit {
+  fill: transparent;
+  cursor: grab;
+}
+.eqm-point-info {
+  position: absolute;
+  z-index: 12;
+  width: min(270px, calc(100% - 16px));
+  padding: 9px 10px;
+  transform: translate(-50%, calc(-100% - 10px));
+  border: 1px solid var(--border-popover);
+  border-radius: var(--r-lg);
+  background: var(--bg-popover);
+  color: var(--fg-primary);
+  box-shadow: var(--shadow-popover);
+  pointer-events: auto;
+}
+.eqm-point-info.below {
+  transform: translate(-50%, 10px);
+}
+.eqm-point-info-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-meta);
+}
+.eqm-point-info-chip {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border-radius: 50%;
+}
+.eqm-point-info-kind {
+  margin-left: auto;
+  color: var(--fg-secondary);
+}
+.eqm-point-info-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.eqm-point-info-values > div {
+  min-width: 0;
+  text-align: center;
+}
+.eqm-point-info-values input,
+.eqm-point-info-values span {
+  display: block;
+}
+.eqm-point-info-values input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-main);
+  color: var(--fg-primary);
+  font: inherit;
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.eqm-point-info-values input::-webkit-inner-spin-button,
+.eqm-point-info-values input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+.eqm-point-info-values input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.eqm-point-info-values input:disabled {
+  color: var(--fg-muted);
+  opacity: 0.6;
+}
+.eqm-point-info-values span {
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: var(--fs-caption);
+}
+.eqm-curve-context {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  min-width: 142px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.eqm-curve-context button {
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--fg-primary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.eqm-curve-context button:hover:not(:disabled) {
+  background: var(--bg-active);
+}
+.eqm-curve-context button.danger {
+  color: var(--danger);
+}
+.eqm-curve-context button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.eqm-chip {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.eqm-bandlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  /* Claim the panel's leftover height so the rows only scroll when they
+     genuinely do not fit. */
+  flex: 1;
+  min-height: 0;
+}
+.eqm-advanced {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-main) 28%, transparent);
+}
+.eqm-advanced-toggle {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 7px var(--sp-3);
+  border: 0;
+  border-radius: inherit;
+  color: var(--fg-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+.eqm-advanced-toggle:hover {
+  color: var(--fg-primary);
+  background: var(--bg-surface-hover);
+}
+.eqm-advanced-toggle > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.eqm-advanced-count {
+  color: var(--fg-muted);
+}
+.eqm-advanced.open .eqm-advanced-toggle {
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+}
+.eqm-advanced .eqm-bandlist {
+  max-height: 260px;
+  padding: var(--sp-2);
+}
+.eqm-bands-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+/* Fade the bottom edge so a clipped row reads as "scroll for more", not a bug. */
+.eqm-bands-viewport::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 16px;
+  background: linear-gradient(to top, var(--bg-surface), transparent);
+  pointer-events: none;
+}
+.eqm-bands {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 1;
+  /* Two rows, so a short window shrinks the list instead of clipping the
+     panel it lives in. */
+  min-height: 72px;
+  overflow-y: auto;
+  /* keep rows clear of the scrollbar and the bottom fade */
+  padding-right: 4px;
+  padding-bottom: 8px;
+}
+.eqm-bands::-webkit-scrollbar {
+  width: 8px;
+}
+.eqm-bands::-webkit-scrollbar-track {
+  background: transparent;
+}
+.eqm-bands::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.eqm-bands::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+}
+.eqm-band {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+.eqm-band.sel {
+  border-color: var(--border);
+  background: var(--bg-surface-hover);
+}
+.eqm-kind {
+  /* Fixed width so "Peak" and "High shelf" share one edge and the row
+     controls stay aligned; the delete button floats to the far right. */
+  flex: 0 0 104px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 22px 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  /* Native select chrome ignores color styling under GTK webkit and
+     renders white-on-white; draw it ourselves with a chevron. */
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bg-main)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23ababb0' stroke-width='1.5'/%3E%3C/svg%3E")
+    no-repeat right 7px center;
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+}
+.eqm-kind option {
+  background: var(--bg-surface);
+  color: var(--fg-primary);
+}
+.eqm-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--fg-secondary);
+}
+.eqm-field input {
+  width: 62px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  /* The native number spinners render as white boxes under GTK webkit. */
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.eqm-field input::-webkit-inner-spin-button,
+.eqm-field input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.eqm-field input:disabled {
+  opacity: 0.4;
+}
+.eqm-remove {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.eqm-remove:hover {
+  background: var(--bg-active);
+  color: var(--danger);
+}
+.eqm-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  align-self: flex-start;
+  padding: 5px var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-meta);
+}
+.eqm-add:hover {
+  color: var(--fg-primary);
+  border-color: var(--fg-secondary);
+}
+.eqm-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.eqm-save-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 4px 6px;
+}
+.eqm-save-row .menu-input {
+  flex: 1;
+  min-width: 0;
+}
+.eqm-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 4px 6px;
+}
+.eqm-import-text {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  color: var(--fg-primary);
+  font-family: inherit;
+  font-size: 11px;
+}
+.eqm-import-btns {
+  display: flex;
+  gap: var(--sp-1);
+}
+/* The row wrapper hosts the apply button plus a delete sibling, so no
+   button ever nests inside another (same shape as .profile-row). */
+.eqm-preset-row {
+  display: flex;
+  align-items: center;
+}
+.eqm-preset-row .eqm-remove {
+  margin-left: auto;
+  margin-right: 4px;
+}
+.eqm-preset-apply {
+  flex: 1;
+  min-width: 0;
+}
+.eqm-iconbtn {
+  padding: 7px;
+}
+.eqm-tone-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-6);
+  padding: 0 var(--sp-3);
+}
+.eqm-tone-controls .dsp-row {
+  gap: var(--sp-2);
+}
+.eqm-tone-controls .dsp-label {
+  width: 48px;
+  flex-basis: 48px;
+}
+.eqm-tone-controls .dsp-value {
+  width: 64px;
+  flex-basis: 64px;
+  white-space: nowrap;
+}
+/* Inside the EQ modal the preamp isn't part of a signal chain, so drop the
+   Mic screen's indent + rail that the shared .dsp-row carries. */
+.eqm-editor .dsp-row {
+  margin-left: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-left: none;
+}
+/* Delete floats to the row's right edge, set apart from the value fields. */
+.eqm-band .eqm-remove {
+  margin-left: auto;
+}
+.eqm-remove:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.eqm-remove:disabled:hover {
+  background: transparent;
+  color: var(--fg-secondary);
+}
+.eqm-remove.danger {
+  color: var(--danger);
+}
+/* Keyboard focus parity: the same accent ring the mouse never needs. */
+.eqm-field input:focus-visible,
+.eqm-kind:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.eqm-remove:focus-visible,
+.eqm-add:focus-visible,
+.eqm-iconbtn:focus-visible,
+.eqm-preset-apply:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Preset menu: labeled sections replace the per-row source icon. */
+.eqm-preset-head {
+  padding: 6px var(--sp-3) 2px;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.eqm-preset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The Presets button borrows the active preset's name; cap it so a long
+   user name can't push the reset icon off the header. */
+.eqm-preset-btn-label {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Save section caption; brighter when the curve is an unsaved custom one. */
+.eqm-save-label {
+  padding: 6px var(--sp-3) 4px;
+  font-size: var(--fs-caption);
+  color: var(--fg-muted);
+}
+.eqm-save-label.custom {
+  color: var(--fg-secondary);
+}
+/* Import + Export share one row as equal-width buttons. */
+.eqm-io-row {
+  display: flex;
+  gap: var(--sp-1);
+  padding: 4px 6px;
+}
+.eqm-io-btn {
+  flex: 1;
+  justify-content: center;
+}
+.eqm-io-btn.on {
+  border-color: var(--accent);
+  color: var(--fg-primary);
+}
+.eqm-preset-apply .ms {
+  flex: 0 0 auto;
+}
+.eqm-preset-confirm {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  margin-right: 4px;
+}
+.eqm-preset-row .eqm-preset-confirm .eqm-remove {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* ---------- Reduced motion ---------- */
+/* Entrance animations and hover transitions are decoration; honour the OS
+   setting rather than moving things for people who asked us not to. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+   Theme: Tokyo Night (opt-in via <html data-theme="tokyo-night">)
+   Original theme stays the default under :root.
+   ============================================================ */
+:root[data-theme="tokyo-night"] {
+  --bg-main: #1a1b26;
+  --bg-sidebar: #16161e;
+  --bg-chat: #1a1b26;
+  --bg-surface: #1f2335;
+  --bg-surface-hover: #24283b;
+  --bg-active: #292e42;
+
+  --fg-primary: #c0caf5;
+  --fg-secondary: #a9b1d6;
+  --fg-muted: #565f89;
+
+  --accent: #7aa2f7;
+  --accent-hover: #9eb8f9;
+  --accent-light: rgba(122, 162, 247, 0.12);
+  --on-accent: #1a1b26;
+
+  --bg-popover: #24283b;
+  --bg-popover-hover: #2f334d;
+
+  --border: #2a2e42;
+  --border-popover: #3b4261;
+
+  --online: #9ece6a;
+  --danger: #f7768e;
+  --warning: #e0af68;
+}
+
+/* Theme picker (Settings › Appearance) */
+.theme-picker { display: flex; gap: var(--sp-2); }
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.theme-swatch:hover { border-color: var(--accent-hover); }
+.theme-swatch.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-swatch-colors { display: flex; }
+.theme-swatch-colors i {
+  width: 16px;
+  height: 16px;
+  display: block;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+.theme-swatch-colors i:first-child { border-radius: var(--r-xs) 0 0 var(--r-xs); }
+.theme-swatch-colors i:last-child { border-radius: 0 var(--r-xs) var(--r-xs) 0; }
+.theme-swatch-label { font-size: var(--fs-caption); color: var(--fg-secondary); }
+.theme-swatch.active .theme-swatch-label { color: var(--fg-primary); }

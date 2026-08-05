@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version in X.Y.Z form"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: version
+        name: Validate version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version=${GITHUB_REF_NAME#v}
+            tag=$GITHUB_REF_NAME
+          else
+            version=$INPUT_VERSION
+            tag=v$version
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version must use X.Y.Z format" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: .
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libpipewire-0.3-dev \
+            libmysofa-dev \
+            libfftw3-dev \
+            squashfs-tools \
+            clang
+
+      - run: npm ci
+      - run: npm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Build Linux packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npx tauri build --ci --bundles deb,rpm,appimage \
+            --config "{\"version\":\"$VERSION\"}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+
+  arch:
+    needs: build
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-packages
+          path: bundles
+
+      - name: Build Arch package
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          deb=$(find bundles -name 'Sonux_*_amd64.deb' -print -quit)
+          useradd -m builder
+          install -d -o builder /build
+          cp "$deb" /build/sonux.deb
+          cp packaging/arch/PKGBUILD /build/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" /build/PKGBUILD
+          chown -R builder:builder /build
+          sudo -u builder bash -lc 'cd /build && makepkg --noconfirm --nodeps'
+          cp /build/sonux-bin-*-x86_64.pkg.tar.zst "$GITHUB_WORKSPACE/"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch-package
+          path: sonux-bin-*-x86_64.pkg.tar.zst
+
+  publish:
+    needs: [build, arch]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          mkdir upload
+          find release -type f \( \
+            -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o \
+            -name '*.pkg.tar.zst' \
+          \) -exec cp {} upload/ \;
+          cd upload
+          sha256sum *.deb *.rpm *.AppImage *.pkg.tar.zst > SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes \
+            --title "Sonux $TAG" upload/*
