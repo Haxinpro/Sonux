@@ -291,37 +291,26 @@ A normal release-only installation may use several GiB while compiling.
 Development commands can increase that substantially because Cargo keeps
 incremental build artifacts for faster future builds.
 
-After Sonux has been installed, inspect the generated directories from the
-root of the Sonux checkout:
+After confirming that the installed application launches, users concerned
+about disk space may review the Sonux checkout for build output, caches, and
+downloaded dependencies they no longer need. The main generated locations are
+`target` for Rust artifacts, `node_modules` for JavaScript dependencies,
+`dist` for the frontend build, and `src-tauri/gen` for Tauri-generated data.
+They are not required by the installed copy under `~/.local` and are recreated
+when needed by a later build.
 
-```bash
-du -sh ./target ./node_modules ./dist ./src-tauri/gen 2>/dev/null
-```
-
-Remove only the generated content you no longer want. Each command is separate
-so it is not necessary to delete all build data:
-
-```bash
-# Rust build artifacts; usually the largest directory
-rm -rf -- ./target
-
-# Downloaded JavaScript dependencies
-rm -rf -- ./node_modules
-
-# Generated frontend and Tauri output
-rm -rf -- ./dist ./src-tauri/gen
-```
-
-These commands do not uninstall the copy under `~/.local` or remove settings
-under `~/.config/sonux`. A later `./install.sh` run recreates the required
-dependencies and build output.
+Use your preferred file manager or build-tool cleanup facilities to inspect
+and remove only generated data you recognize. If Sonux came from an extracted
+download and you do not plan to edit its source, the entire extracted folder
+can be moved to the desktop Trash after the installed application has been
+tested. Keep a Git clone if you want to pull updates or work on the project.
 
 > [!WARNING]
-> Confirm with `pwd` that the terminal is in the Sonux repository before using
-> these commands. Keep the leading `./` paths exactly as shown and do not
-> replace them with `/`, `~`, `..`, wildcards, shared build directories, or
-> paths belonging to other projects. If any listed directory is intentionally
-> shared or replaced by a link, do not delete it.
+> Do not remove directories that are shared with other projects, replaced by
+> links, or located outside the Sonux checkout. Review every selected path and
+> the complete contents of the desktop Trash before permanently deleting
+> anything. Sonux settings under `~/.config/sonux` are separate and should be
+> kept unless you intentionally want to reset them.
 
 Configuration is stored as JSON under `~/.config/sonux`.
 
