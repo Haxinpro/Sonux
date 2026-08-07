@@ -14,7 +14,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # Tauri's Linux release example uses 22.04, which also produces packages
+    # compatible with systems older than the current GitHub runner image.
+    runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -80,7 +82,7 @@ jobs:
           # compatible with current Ubuntu libraries.
           NO_STRIP: "1"
         run: |
-          npx tauri build --ci --bundles deb,rpm,appimage \
+          npx tauri build --verbose --ci --bundles deb,rpm,appimage \
             --config "{\"version\":\"$VERSION\"}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
