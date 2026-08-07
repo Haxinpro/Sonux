@@ -65,6 +65,7 @@ jobs:
             libpipewire-0.3-dev \
             libmysofa-dev \
             libfftw3-dev \
+            librsvg2-dev \
             squashfs-tools \
             clang
 
