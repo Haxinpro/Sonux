@@ -53,11 +53,11 @@ planned package formats, not guaranteed compatibility.
 
 | Distribution | Test status | Intended installation route |
 | --- | --- | --- |
-| CachyOS | Tested — built and run on CachyOS | Build from source with `./install.sh` |
-| Arch Linux, Manjaro, EndeavourOS | Not yet tested | Build from source; release package planned |
-| Ubuntu 26.04+; Debian/Mint with WirePlumber 0.5+ | Not yet tested | Build from source; `.deb` release planned |
-| Fedora, openSUSE | Not yet tested | Build from source; `.rpm` release planned |
-| Other PipeWire-based distributions | Not yet tested | Source build or AppImage, when available |
+| CachyOS | Tested — built and run on CachyOS | Arch package or build from source |
+| Arch Linux, Manjaro, EndeavourOS | Not yet tested | Arch package or build from source |
+| Ubuntu 26.04+; Debian/Mint with WirePlumber 0.5+ | Not yet tested | `.deb` package or build from source |
+| Fedora, openSUSE | Not yet tested | `.rpm` package or build from source |
+| Other PipeWire-based distributions | Not yet tested | AppImage or source build |
 
 All distributions require PipeWire with PulseAudio compatibility and
 WirePlumber 0.5 or newer. Reports and fixes for other distributions are
@@ -110,8 +110,9 @@ Sonux uses a conventional stereo downmix so channels are not silently lost.
 
 ## Installation
 
-Current installations build Sonux from source and require the dependencies in
-the next section.
+Prebuilt Linux packages are available from
+[GitHub Releases](https://github.com/Haxinpro/Sonux/releases). You can also
+build Sonux from source using the instructions below.
 
 ### From a downloaded folder
 
@@ -141,11 +142,19 @@ but its settings are kept.
 
 Configuration is stored as plain JSON under `~/.config/sonux`.
 
-### Planned prebuilt packages
+### Prebuilt packages
 
 > [!NOTE]
-> Prebuilt packages are not published yet. When available, find them on the
-> [GitHub Releases page](https://github.com/Haxinpro/Sonux/releases).
+> Compatibility outside CachyOS has not yet been tested. All installations
+> require PipeWire with PulseAudio compatibility and WirePlumber 0.5 or newer.
+
+Sonux 1.0.1 downloads:
+
+- [Arch Linux package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/sonux-bin-1.0.1-1-x86_64.pkg.tar.zst)
+- [Debian package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux_1.0.1_amd64.deb)
+- [RPM package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux-1.0.1-1.x86_64.rpm)
+- [AppImage](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux_1.0.1_amd64.AppImage)
+- [SHA-256 checksums](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/SHA256SUMS)
 
 | Format | Intended systems | Installation command |
 | --- | --- | --- |
@@ -153,6 +162,18 @@ Configuration is stored as plain JSON under `~/.config/sonux`.
 | `.deb` | Ubuntu 26.04+; compatible Debian/Mint releases | `sudo apt install ./Sonux_*_amd64.deb` |
 | Arch package | Arch Linux and derivatives | `sudo pacman -U ./sonux-bin-*-x86_64.pkg.tar.zst` |
 | AppImage | Other distributions | `chmod +x Sonux_*_amd64.AppImage && ./Sonux_*_amd64.AppImage` |
+
+To uninstall a package-managed installation:
+
+| Format | Uninstall command |
+| --- | --- |
+| `.rpm` | `sudo dnf remove sonux` |
+| `.deb` | `sudo apt remove sonux` |
+| Arch package | `sudo pacman -Rns sonux-bin` |
+
+The AppImage is not installed system-wide; remove its downloaded file when you
+no longer want it. Package removal and deleting the AppImage keep personal
+settings under `~/.config/sonux`.
 
 ## Requirements and build dependencies
 
