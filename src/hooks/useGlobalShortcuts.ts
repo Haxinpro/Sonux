@@ -36,23 +36,14 @@ export function useGlobalShortcuts() {
   const bindings = useShortcutSettings((state) => state.bindings);
 
   useEffect(() => {
-    const focusedRestart = (event: KeyboardEvent) => {
-      if (event.ctrlKey && event.altKey && !event.shiftKey && event.key.toLowerCase() === "r") {
-        event.preventDefault();
-        restartApplication();
-      }
-    };
-    window.addEventListener("keydown", focusedRestart);
+    if (!enabled) return;
 
-    if (!enabled) {
-      return () => window.removeEventListener("keydown", focusedRestart);
-    }
-
-    const entries = Object.entries(bindings) as [ShortcutAction, string][];
+    const entries = (Object.entries(bindings) as [ShortcutAction, string][])
+      .filter(([, shortcut]) => shortcut.length > 0);
     const normalized = entries.map(([, shortcut]) => shortcut.toLowerCase());
     if (new Set(normalized).size !== normalized.length) {
       useMixerStore.setState({ error: "Each global shortcut must use a different key combination." });
-      return () => window.removeEventListener("keydown", focusedRestart);
+      return;
     }
 
     let disposed = false;
@@ -76,7 +67,7 @@ export function useGlobalShortcuts() {
       }
       if (!disposed && failed.length > 0) {
         useMixerStore.setState({
-          error: `Could not register ${failed.join(", ")} globally. Other shortcuts remain active; Ctrl+Alt+R still works while Sonux is focused.`,
+          error: `Could not register ${failed.join(", ")} globally. Other shortcuts remain active.`,
         });
       }
     };
@@ -84,7 +75,6 @@ export function useGlobalShortcuts() {
     void setup();
     return () => {
       disposed = true;
-      window.removeEventListener("keydown", focusedRestart);
       if (registered.length > 0) void unregister(registered).catch(() => {});
     };
   }, [enabled, bindings]);

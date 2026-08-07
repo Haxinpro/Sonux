@@ -59,6 +59,18 @@ pub fn run() {
     // has released its PipeWire nodes and single-instance socket.
     commands::settings::wait_for_restart_parent();
 
+    if let Err(error) = persistence::migrate_legacy_config_dir() {
+        eprintln!("sonux: could not migrate legacy settings; refusing to start: {error}");
+        return;
+    }
+    if let Err(error) = persistence::wireplumber::migrate_legacy_conf() {
+        eprintln!("sonux: could not migrate legacy routing rules; refusing to start: {error}");
+        return;
+    }
+    if let Err(error) = persistence::autostart::migrate_legacy_unit() {
+        eprintln!("sonux: could not migrate the legacy autostart unit: {error}");
+    }
+
     // Prefer the native PipeWire backend (Phase 2); fall back to pactl
     // subprocess calls if the native loop can't come up. Levels (real VU
     // metering) are native-only.

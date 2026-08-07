@@ -39,10 +39,16 @@ interface PresetSelection {
 }
 
 const ACTIVE_PRESET_KEY = "sonux-active-eq-presets";
+const LEGACY_ACTIVE_PRESET_KEY = "sink-active-eq-presets";
+
+function readPresetMap(): Record<string, PresetSelection> {
+  const raw = localStorage.getItem(ACTIVE_PRESET_KEY) ?? localStorage.getItem(LEGACY_ACTIVE_PRESET_KEY);
+  return JSON.parse(raw ?? "{}") as Record<string, PresetSelection>;
+}
 
 function readPresetSelection(sinkName: string): PresetSelection | null {
   try {
-    const all = JSON.parse(localStorage.getItem(ACTIVE_PRESET_KEY) ?? "{}") as Record<string, PresetSelection>;
+    const all = readPresetMap();
     const selected = all[sinkName];
     return selected && (selected.source === "bundled" || selected.source === "user") && selected.name
       ? selected
@@ -54,7 +60,7 @@ function readPresetSelection(sinkName: string): PresetSelection | null {
 
 function writePresetSelection(sinkName: string, selected: PresetSelection | null) {
   try {
-    const all = JSON.parse(localStorage.getItem(ACTIVE_PRESET_KEY) ?? "{}") as Record<string, PresetSelection>;
+    const all = readPresetMap();
     if (selected) all[sinkName] = selected;
     else delete all[sinkName];
     localStorage.setItem(ACTIVE_PRESET_KEY, JSON.stringify(all));

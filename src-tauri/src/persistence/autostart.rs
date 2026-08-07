@@ -11,11 +11,16 @@ use std::process::Command;
 use crate::error::SinkError;
 
 const UNIT_NAME: &str = "sonux.service";
+const LEGACY_UNIT_NAME: &str = "sink.service";
 
-fn unit_path() -> Result<PathBuf, SinkError> {
+fn named_unit_path(name: &str) -> Result<PathBuf, SinkError> {
     let dir = dirs::config_dir()
         .ok_or_else(|| SinkError::Config("cannot resolve the user config directory".into()))?;
-    Ok(dir.join("systemd").join("user").join(UNIT_NAME))
+    Ok(dir.join("systemd").join("user").join(name))
+}
+
+fn unit_path() -> Result<PathBuf, SinkError> {
+    named_unit_path(UNIT_NAME)
 }
 
 fn render_unit() -> Result<String, SinkError> {
@@ -69,6 +74,30 @@ pub fn is_enabled() -> bool {
     systemctl(&["is-enabled", UNIT_NAME])
         .map(|out| out.status.success())
         .unwrap_or(false)
+        || systemctl(&["is-enabled", LEGACY_UNIT_NAME])
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+}
+
+/// Replace an enabled pre-Sonux service with the current unit without leaving
+/// an autostart gap. Stale, disabled legacy unit files are removed as well.
+pub fn migrate_legacy_unit() -> Result<(), SinkError> {
+    let legacy_path = named_unit_path(LEGACY_UNIT_NAME)?;
+    let legacy_enabled = systemctl(&["is-enabled", LEGACY_UNIT_NAME])
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if !legacy_enabled && !legacy_path.exists() {
+        return Ok(());
+    }
+    if legacy_enabled {
+        enable()?;
+    }
+    let _ = systemctl(&["disable", LEGACY_UNIT_NAME]);
+    if legacy_path.exists() {
+        fs::remove_file(legacy_path)?;
+    }
+    let _ = systemctl(&["daemon-reload"]);
+    Ok(())
 }
 
 pub fn enable() -> Result<(), SinkError> {
@@ -106,8 +135,13 @@ pub fn disable() -> Result<(), SinkError> {
     let path = unit_path()?;
     if path.exists() {
         fs::remove_file(&path)?;
-        let _ = systemctl(&["daemon-reload"]);
     }
+    let _ = systemctl(&["disable", LEGACY_UNIT_NAME]);
+    let legacy_path = named_unit_path(LEGACY_UNIT_NAME)?;
+    if legacy_path.exists() {
+        fs::remove_file(legacy_path)?;
+    }
+    let _ = systemctl(&["daemon-reload"]);
     Ok(())
 }
 

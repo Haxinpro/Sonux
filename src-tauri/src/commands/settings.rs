@@ -138,7 +138,9 @@ fn spawn_detached_replacement() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     match spawn_systemd_replacement(&executable) {
         Ok(()) => return Ok(()),
-        Err(error) => eprintln!("sonux: systemd restart unavailable ({error}); using direct launch"),
+        Err(error) => {
+            eprintln!("sonux: systemd restart unavailable ({error}); using direct launch")
+        }
     }
 
     spawn_direct_replacement(&executable)
@@ -152,9 +154,7 @@ mod restart_tests {
     #[test]
     fn strips_linux_deleted_suffix_from_rebuilt_executable() {
         assert_eq!(
-            normalize_restart_executable(PathBuf::from(
-                "target/release/sonux (deleted)",
-            )),
+            normalize_restart_executable(PathBuf::from("target/release/sonux (deleted)",)),
             PathBuf::from("target/release/sonux"),
         );
     }

@@ -14,13 +14,31 @@ use std::path::PathBuf;
 use crate::error::SinkError;
 use crate::persistence::assignments::Assignments;
 
-pub fn conf_path() -> Result<PathBuf, SinkError> {
+fn named_conf_path(name: &str) -> Result<PathBuf, SinkError> {
     let dir = dirs::config_dir()
         .ok_or_else(|| SinkError::Config("cannot resolve the user config directory".into()))?;
     Ok(dir
         .join("wireplumber")
         .join("wireplumber.conf.d")
-        .join("90-sonux-routing.conf"))
+        .join(name))
+}
+
+pub fn conf_path() -> Result<PathBuf, SinkError> {
+    named_conf_path("90-sonux-routing.conf")
+}
+
+pub fn migrate_legacy_conf() -> Result<(), SinkError> {
+    let legacy = named_conf_path("90-sink-routing.conf")?;
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let current = conf_path()?;
+    if current.exists() {
+        fs::remove_file(legacy)?;
+    } else {
+        fs::rename(legacy, current)?;
+    }
+    Ok(())
 }
 
 /// Escape a string for use inside a double-quoted SPA-JSON value.

@@ -176,7 +176,7 @@ Package names vary between distributions. Sonux requires these components:
 | Component | Requirement |
 | --- | --- |
 | Node.js and npm | Node.js 20.19+ on the Node 20 line, or Node 22.12+ |
-| Rust and Cargo | Rust 1.77 or newer |
+| Rust and Cargo | Rust 1.88 or newer |
 | C build tools | A C compiler, linker, and `pkg-config` |
 | Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |
 

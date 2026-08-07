@@ -8,6 +8,7 @@ export const THEMES: { id: ThemeId; label: string; swatch: string[] }[] = [
 ];
 
 const STORAGE_KEY = "sonux-theme";
+const LEGACY_STORAGE_KEY = "sink-theme";
 
 function apply(theme: ThemeId) {
   const root = document.documentElement;
@@ -16,7 +17,7 @@ function apply(theme: ThemeId) {
 }
 
 function initial(): ThemeId {
-  const saved = localStorage.getItem(STORAGE_KEY);
+  const saved = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
   return saved === "tokyo-night" || saved === "original" ? saved : "original";
 }
 

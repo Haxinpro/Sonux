@@ -23,7 +23,25 @@ pub fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Create Sink's config directory (and parents) with owner-only access -
+/// Move settings written by the pre-Sonux namespace into the current config
+/// directory. Never merge into or overwrite an existing Sonux directory.
+fn migrate_legacy_config_dir_from(base: &std::path::Path) -> std::io::Result<()> {
+    let legacy = base.join("sink");
+    let current = base.join("sonux");
+    if legacy.exists() && !current.exists() {
+        std::fs::rename(legacy, current)?;
+    }
+    Ok(())
+}
+
+pub fn migrate_legacy_config_dir() -> std::io::Result<()> {
+    let Some(base) = dirs::config_dir() else {
+        return Ok(());
+    };
+    migrate_legacy_config_dir_from(&base)
+}
+
+/// Create Sonux's config directory (and parents) with owner-only access -
 /// routing rules and app history are nobody else's business. Used by every
 /// save path that writes under `$XDG_CONFIG_HOME/sonux`.
 pub fn ensure_private_dir(path: &std::path::Path) -> std::io::Result<()> {
@@ -64,14 +82,16 @@ pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::
     result
 }
 
-/// Factory reset: delete everything Sink ever saved - the whole config
+/// Factory reset: delete everything Sonux or its legacy namespace ever saved - the whole config
 /// directory (channels, mixes, profiles, assignments, history, prefs)
 /// and the WirePlumber routing rules.
 pub fn wipe_all() -> Result<(), crate::error::SinkError> {
     if let Some(dir) = dirs::config_dir() {
-        let sink_dir = dir.join("sonux");
-        if sink_dir.exists() {
-            std::fs::remove_dir_all(&sink_dir)?;
+        for name in ["sonux", "sink"] {
+            let app_dir = dir.join(name);
+            if app_dir.exists() {
+                std::fs::remove_dir_all(&app_dir)?;
+            }
         }
     }
     if let Ok(conf) = wireplumber::conf_path() {
@@ -114,6 +134,36 @@ mod tests {
             !std::path::Path::new(&tmp).exists(),
             "temp file must not linger"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_config_migrates_without_overwriting_current_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "sonux-config-migration-{}-{}",
+            std::process::id(),
+            unix_now()
+        ));
+        let legacy = dir.join("sink");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("prefs.json"), b"legacy").unwrap();
+
+        migrate_legacy_config_dir_from(&dir).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("sonux/prefs.json")).unwrap(),
+            b"legacy"
+        );
+        assert!(!legacy.exists());
+
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("prefs.json"), b"do not merge").unwrap();
+        migrate_legacy_config_dir_from(&dir).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("sonux/prefs.json")).unwrap(),
+            b"legacy"
+        );
+        assert!(legacy.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1876,27 +1876,22 @@ body,
   color: var(--fg-primary);
   font: inherit;
   font-size: var(--fs-meta);
+  caret-color: transparent;
+  cursor: pointer;
 }
 .shortcut-input:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+.shortcut-input.recording {
+  color: var(--accent-hover);
+}
 .shortcut-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--sp-4);
   padding: var(--sp-2) var(--sp-4) var(--sp-3) 64px;
-  color: var(--fg-muted);
-  font-size: var(--fs-caption);
-}
-.shortcut-buttons {
-  display: flex;
-  gap: var(--sp-2);
-}
-.shortcut-save {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 /* horizontal per-app volume slider */

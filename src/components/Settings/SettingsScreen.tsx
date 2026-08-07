@@ -4,9 +4,9 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useMixerStore } from "../../store/mixer";
 import {
   DEFAULT_SHORTCUTS,
+  shortcutFromKeyboardEvent,
   useShortcutSettings,
   type ShortcutAction,
-  type ShortcutBindings,
 } from "../../store/shortcuts";
 import { useTheme, THEMES } from "../../store/theme";
 import { restartApplication } from "../../hooks/useGlobalShortcuts";
@@ -15,6 +15,7 @@ import { Ms } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
+import { ProcessingInfo } from "../ProcessingInfo";
 import { Toggle } from "../Toggle";
 
 interface DefaultDevices {
@@ -121,10 +122,7 @@ export function SettingsScreen() {
   const shortcutBindings = useShortcutSettings((s) => s.bindings);
   const setShortcutsEnabled = useShortcutSettings((s) => s.setEnabled);
   const setShortcutBindings = useShortcutSettings((s) => s.setBindings);
-  const resetShortcuts = useShortcutSettings((s) => s.reset);
-  const [shortcutDraft, setShortcutDraft] = useState<ShortcutBindings>(shortcutBindings);
-
-  useEffect(() => setShortcutDraft(shortcutBindings), [shortcutBindings]);
+  const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart);
@@ -333,7 +331,13 @@ export function SettingsScreen() {
               <div className="rtitle">Enable shortcuts</div>
               <div className="rsub">Control audio while games and other apps are focused</div>
             </div>
-            <Toggle on={shortcutsEnabled} onClick={() => setShortcutsEnabled(!shortcutsEnabled)} />
+            <div className="processing-card-head-actions">
+              <Toggle on={shortcutsEnabled} onClick={() => setShortcutsEnabled(!shortcutsEnabled)} />
+              <ProcessingInfo
+                label="Recording shortcuts"
+                text={'Click a binding, then press the keyboard shortcut you want. The change is saved immediately.\n\nPress Backspace or Delete to clear one binding, or Escape to cancel.'}
+              />
+            </div>
           </div>
           {SHORTCUT_ROWS.map(({ action, label, icon }) => (
             <label className="row shortcut-row" key={action}>
@@ -344,42 +348,38 @@ export function SettingsScreen() {
                 <div className="rtitle">{label}</div>
               </div>
               <input
-                className="shortcut-input"
-                value={shortcutDraft[action]}
+                className={`shortcut-input${recordingShortcut === action ? " recording" : ""}`}
+                value={recordingShortcut === action ? "Press a key to bind" : shortcutBindings[action]}
+                placeholder="Click and press keys"
                 spellCheck={false}
-                aria-label={`${label} shortcut`}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setShortcutDraft((current) => ({ ...current, [action]: value }));
+                readOnly
+                title="Click, then press a keyboard shortcut. Backspace or Delete clears it; Escape cancels."
+                aria-label={recordingShortcut === action ? `${label}: press a key to bind` : `${label} shortcut`}
+                onFocus={() => setRecordingShortcut(action)}
+                onBlur={() => setRecordingShortcut((current) => current === action ? null : current)}
+                onKeyDown={(event) => {
+                  event.preventDefault();
+                  if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "Escape") {
+                    event.currentTarget.blur();
+                    return;
+                  }
+                  const shortcut = shortcutFromKeyboardEvent(event);
+                  if (shortcut === null) return;
+                  setShortcutBindings({ ...shortcutBindings, [action]: shortcut });
+                  event.currentTarget.blur();
                 }}
               />
             </label>
           ))}
           <div className="shortcut-footer">
-            <span>Use Tauri shortcut notation, for example Ctrl+Alt+G.</span>
-            <div className="shortcut-buttons">
-              <button
-                type="button"
-                className="select"
-                onClick={() => {
-                  resetShortcuts();
-                  setShortcutDraft({ ...DEFAULT_SHORTCUTS });
-                }}
-              >
-                Reset
-              </button>
-              <button
-                type="button"
-                className="select shortcut-save"
-                disabled={
-                  Object.values(shortcutDraft).some((value) => !value.trim()) ||
-                  JSON.stringify(shortcutDraft) === JSON.stringify(shortcutBindings)
-                }
-                onClick={() => setShortcutBindings(shortcutDraft)}
-              >
-                Apply
-              </button>
-            </div>
+            <button
+              type="button"
+              className="select"
+              disabled={JSON.stringify(shortcutBindings) === JSON.stringify(DEFAULT_SHORTCUTS)}
+              onClick={() => setShortcutBindings({ ...DEFAULT_SHORTCUTS })}
+            >
+              Restore defaults
+            </button>
           </div>
         </div>
 

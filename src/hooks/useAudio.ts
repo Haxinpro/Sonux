@@ -27,21 +27,32 @@ export function useAudio() {
     void initialize();
     let fastId: ReturnType<typeof setInterval> | undefined;
     let slowId: ReturnType<typeof setInterval> | undefined;
-    const fastPoll = () => {
-      void fetchAppStreams();
-      void fetchChannels();
+    let fastInFlight = false;
+    let slowInFlight = false;
+    const fastPoll = async () => {
+      if (fastInFlight) return;
+      fastInFlight = true;
+      try {
+        await Promise.all([fetchAppStreams(), fetchChannels()]);
+      } finally {
+        fastInFlight = false;
+      }
     };
-    const slowPoll = () => {
-      void fetchOutputs();
-      void fetchMicClients();
-      void fetchSeenApps();
+    const slowPoll = async () => {
+      if (slowInFlight) return;
+      slowInFlight = true;
+      try {
+        await Promise.all([fetchOutputs(), fetchMicClients(), fetchSeenApps()]);
+      } finally {
+        slowInFlight = false;
+      }
     };
     const start = () => {
       if (fastId === undefined) {
-        fastPoll(); // refresh immediately so a returning window isn't stale
-        slowPoll();
-        fastId = setInterval(fastPoll, FAST_POLL_INTERVAL_MS);
-        slowId = setInterval(slowPoll, SLOW_POLL_INTERVAL_MS);
+        void fastPoll(); // refresh immediately so a returning window isn't stale
+        void slowPoll();
+        fastId = setInterval(() => void fastPoll(), FAST_POLL_INTERVAL_MS);
+        slowId = setInterval(() => void slowPoll(), SLOW_POLL_INTERVAL_MS);
       }
     };
     const stop = () => {
