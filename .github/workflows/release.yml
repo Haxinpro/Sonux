@@ -14,9 +14,8 @@ permissions:
 
 jobs:
   build:
-    # Tauri's Linux release example uses 22.04, which also produces packages
-    # compatible with systems older than the current GitHub runner image.
-    runs-on: ubuntu-22.04
+    # Sonux's PipeWire bindings require headers newer than Ubuntu 22.04 ships.
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
