@@ -75,6 +75,10 @@ jobs:
       - name: Build Linux packages
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          # linuxdeploy's bundled strip cannot read modern ELF RELR sections.
+          # Skipping this optional size optimization keeps AppImage packaging
+          # compatible with current Ubuntu libraries.
+          NO_STRIP: "1"
         run: |
           npx tauri build --ci --bundles deb,rpm,appimage \
             --config "{\"version\":\"$VERSION\"}"
