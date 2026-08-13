@@ -1,3 +1,9 @@
 [workspace]
 members = ["src-tauri"]
 resolver = "2"
+
+[patch."https://gitlab.freedesktop.org/pipewire/pipewire-rs"]
+# Clang 22 no longer emits bindings for PipeWire's cast-style ID macros.
+# Keep this narrow patch source-controlled until pipewire-rs handles them.
+libspa-sys = { path = "src-tauri/vendor/libspa-sys" }
+pipewire-sys = { path = "src-tauri/vendor/pipewire-sys" }

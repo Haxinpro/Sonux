@@ -84,6 +84,74 @@ describe("setChannelVolume", () => {
   });
 });
 
+describe("profile operations", () => {
+  it("reports a failed load without changing the active profile", async () => {
+    useMixerStore.setState({ activeProfile: "Old" });
+    invoke.mockRejectedValueOnce("malformed profile New");
+
+    const succeeded = await useMixerStore.getState().loadProfile("New");
+
+    expect(succeeded).toBe(false);
+    expect(useMixerStore.getState().activeProfile).toBe("Old");
+    expect(useMixerStore.getState().error).toContain("malformed profile");
+  });
+
+  it("returns failure when rename is rejected", async () => {
+    invoke.mockRejectedValueOnce("profile already exists");
+
+    const succeeded = await useMixerStore.getState().renameProfile("Old", "New");
+
+    expect(succeeded).toBe(false);
+    expect(useMixerStore.getState().error).toContain("already exists");
+  });
+
+  it("reports creation committed when automatic activation fails", async () => {
+    invoke
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce("could not activate new profile");
+
+    const succeeded = await useMixerStore.getState().createBlankProfile("New", true);
+
+    expect(succeeded).toBe(true);
+    expect(useMixerStore.getState().error).toContain("could not activate");
+  });
+
+  it("reports copy committed when automatic activation fails", async () => {
+    invoke
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce("could not activate copied profile");
+
+    const succeeded = await useMixerStore.getState().copyProfile("Old", "Copy");
+
+    expect(succeeded).toBe(true);
+    expect(useMixerStore.getState().error).toContain("could not activate");
+  });
+
+  it("reports rename committed when profile refresh fails", async () => {
+    invoke
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce("could not refresh profiles");
+
+    const succeeded = await useMixerStore.getState().renameProfile("Old", "New");
+
+    expect(succeeded).toBe(true);
+    expect(useMixerStore.getState().error).toContain("could not refresh");
+  });
+
+  it("reports deletion committed when active-profile refresh fails", async () => {
+    invoke
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce("could not refresh active profile");
+
+    const succeeded = await useMixerStore.getState().deleteProfile("Old");
+
+    expect(succeeded).toBe(true);
+    expect(useMixerStore.getState().error).toContain("could not refresh");
+  });
+});
+
 describe("toggleMute", () => {
   it("binds an immediate edit to the profile visible when it was sent", async () => {
     useMixerStore.setState({

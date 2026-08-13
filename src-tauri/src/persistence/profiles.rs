@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -114,8 +115,104 @@ pub fn validate_mic_channels(profile: &Profile) -> Result<(), SinkError> {
     Ok(())
 }
 
+/// Enforce the invariants guaranteed by the normal channel/mic commands and
+/// normalize bounded controls before a profile reaches an audio backend.
+/// Structural errors are rejected; stale per-channel settings are discarded.
+pub(crate) fn normalize_and_validate(profile: &mut Profile) -> Result<(), SinkError> {
+    let safe_name = sanitize_name(&profile.name)?;
+    if safe_name != profile.name {
+        return Err(SinkError::Config(
+            "profile name must not contain surrounding whitespace".into(),
+        ));
+    }
+
+    if profile.channels.is_empty()
+        || profile.channels.len() > crate::persistence::channels::MAX_CHANNELS
+    {
+        return Err(SinkError::Config(format!(
+            "profile must contain 1-{} channels",
+            crate::persistence::channels::MAX_CHANNELS
+        )));
+    }
+    let mut channel_names = HashSet::new();
+    for channel in &mut profile.channels {
+        let suffix = channel.name.strip_prefix("sink_");
+        if suffix.is_none_or(|suffix| {
+            suffix.is_empty()
+                || channel.name.len() > 64
+                || !suffix
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        }) || crate::persistence::channels::is_reserved_sink_name(&channel.name)
+            || !channel_names.insert(channel.name.clone())
+        {
+            return Err(SinkError::Config(format!(
+                "invalid or duplicate profile channel: {}",
+                channel.name
+            )));
+        }
+        let trimmed_label = channel.label.trim();
+        if trimmed_label.is_empty() || trimmed_label.len() > 24 {
+            return Err(SinkError::Config(format!(
+                "invalid label for profile channel: {}",
+                channel.name
+            )));
+        }
+        channel.label = trimmed_label.to_string();
+        channel.volume_percent = channel.volume_percent.min(150);
+    }
+
+    validate_mic_channels(profile)?;
+    if let Some(mic) = &mut profile.mic {
+        mic.clamp_ranges();
+    }
+    for mic in &mut profile.secondary_mics {
+        mic.clamp_ranges();
+    }
+
+    if profile
+        .assignments
+        .assignments
+        .iter()
+        .any(|assignment| !channel_names.contains(&assignment.sink_name))
+    {
+        return Err(SinkError::Config(
+            "profile contains an assignment to a missing channel".into(),
+        ));
+    }
+    profile
+        .outputs
+        .outputs
+        .retain(|channel, _| channel_names.contains(channel));
+    profile
+        .outputs
+        .no_failover
+        .retain(|channel| channel_names.contains(channel));
+    profile
+        .eq
+        .configs
+        .retain(|channel, _| channel_names.contains(channel));
+    for config in profile.eq.configs.values_mut() {
+        config.clamp_ranges();
+    }
+    let channel_names = profile
+        .channels
+        .iter()
+        .map(|channel| channel.name.clone())
+        .collect::<Vec<_>>();
+    profile.buses.sanitize(&channel_names);
+    Ok(())
+}
+
 fn profile_path(name: &str) -> Result<PathBuf, SinkError> {
     Ok(profiles_dir()?.join(format!("{}.json", sanitize_name(name)?)))
+}
+
+/// File existence is intentionally separate from profile validity. Creation
+/// and rename must never overwrite a malformed profile that the user may want
+/// to repair or recover.
+pub fn exists(name: &str) -> Result<bool, SinkError> {
+    profile_path(name)?.try_exists().map_err(Into::into)
 }
 
 pub fn list() -> Result<Vec<ProfileInfo>, SinkError> {
@@ -145,10 +242,12 @@ pub fn list() -> Result<Vec<ProfileInfo>, SinkError> {
 
 fn profile_info_from_json(stem: &str, raw: &str) -> Option<ProfileInfo> {
     let safe_name = sanitize_name(stem).ok()?;
-    let profile: Profile = serde_json::from_str(raw).ok()?;
+    let mut profile: Profile = serde_json::from_str(raw).ok()?;
     if safe_name != stem || profile.name != stem {
         return None;
     }
+    migrate_legacy_mic_nodes(&mut profile);
+    normalize_and_validate(&mut profile).ok()?;
     Some(ProfileInfo {
         name: profile.name,
         trigger_device: profile.trigger_device,
@@ -185,11 +284,13 @@ fn ensure_trigger_available(
 }
 
 pub fn save(profile: &Profile) -> Result<(), SinkError> {
+    let mut profile = profile.clone();
+    normalize_and_validate(&mut profile)?;
     let path = profile_path(&profile.name)?;
     if let Some(parent) = path.parent() {
         crate::persistence::ensure_private_dir(parent)?;
     }
-    let json = serde_json::to_string_pretty(profile)
+    let json = serde_json::to_string_pretty(&profile)
         .map_err(|e| SinkError::Config(format!("serialize profile: {e}")))?;
     super::write_atomic(&path, &json)?;
     Ok(())
@@ -206,6 +307,17 @@ pub fn load(name: &str) -> Result<Profile, SinkError> {
     })?;
     let mut profile: Profile = serde_json::from_str(&raw)
         .map_err(|e| SinkError::Config(format!("malformed profile {name}: {e}")))?;
+    if profile.name != name {
+        return Err(SinkError::Config(format!(
+            "profile name does not match its file: {name}"
+        )));
+    }
+    migrate_legacy_mic_nodes(&mut profile);
+    normalize_and_validate(&mut profile)?;
+    Ok(profile)
+}
+
+fn migrate_legacy_mic_nodes(profile: &mut Profile) {
     // Early multiple-mic builds used the playback-sink namespace for
     // secondary virtual sources. Move them into a distinct source namespace
     // so a user output channel can never collide with a microphone.
@@ -214,14 +326,6 @@ pub fn load(name: &str) -> Result<Profile, SinkError> {
             mic.node_name = format!("source_mic_{suffix}");
         }
     }
-    validate_mic_channels(&profile)?;
-    let channel_names = profile
-        .channels
-        .iter()
-        .map(|channel| channel.name.clone())
-        .collect::<Vec<_>>();
-    profile.buses.sanitize(&channel_names);
-    Ok(profile)
 }
 
 pub fn delete(name: &str) -> Result<(), SinkError> {
@@ -238,6 +342,28 @@ pub fn delete(name: &str) -> Result<(), SinkError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_profile(name: &str) -> Profile {
+        Profile {
+            name: name.into(),
+            protected: false,
+            channels: vec![crate::audio::types::VirtualSink {
+                name: "sink_game".into(),
+                label: "Game".into(),
+                icon: None,
+                volume_percent: 100,
+                muted: false,
+                stream_mix: true,
+            }],
+            mic: Some(crate::audio::types::MicConfig::default()),
+            secondary_mics: Vec::new(),
+            assignments: Assignments::default(),
+            outputs: crate::persistence::outputs::ChannelOutputs::default(),
+            eq: crate::persistence::eq::ChannelEq::default(),
+            trigger_device: None,
+            buses: crate::persistence::buses::Buses::default(),
+        }
+    }
 
     #[test]
     fn sanitize_accepts_reasonable_names() {
@@ -260,22 +386,7 @@ mod tests {
 
     #[test]
     fn microphone_nodes_are_bounded_unique_and_namespaced() {
-        let mut profile: Profile = serde_json::from_str(
-            &serde_json::to_string(&Profile {
-                name: "Gaming".into(),
-                protected: false,
-                channels: Vec::new(),
-                mic: Some(crate::audio::types::MicConfig::default()),
-                secondary_mics: Vec::new(),
-                assignments: Assignments::default(),
-                outputs: crate::persistence::outputs::ChannelOutputs::default(),
-                eq: crate::persistence::eq::ChannelEq::default(),
-                trigger_device: None,
-                buses: crate::persistence::buses::Buses::default(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let mut profile = valid_profile("Gaming");
         let secondary = crate::audio::types::MicConfig {
             node_name: "source_mic_chat".into(),
             ..Default::default()
@@ -324,18 +435,9 @@ mod tests {
     fn profile_listing_skips_malformed_and_mismatched_files() {
         assert!(profile_info_from_json("Broken", "not json").is_none());
 
-        let profile = Profile {
-            name: "Main".into(),
-            protected: true,
-            channels: Vec::new(),
-            mic: None,
-            secondary_mics: Vec::new(),
-            assignments: Assignments::default(),
-            outputs: crate::persistence::outputs::ChannelOutputs::default(),
-            eq: crate::persistence::eq::ChannelEq::default(),
-            trigger_device: Some("alsa_output.headset".into()),
-            buses: crate::persistence::buses::Buses::default(),
-        };
+        let mut profile = valid_profile("Main");
+        profile.protected = true;
+        profile.trigger_device = Some("alsa_output.headset".into());
         let raw = serde_json::to_string(&profile).unwrap();
         assert!(profile_info_from_json("Wrong", &raw).is_none());
         assert!(profile_info_from_json(" ../Main", &raw).is_none());
@@ -344,5 +446,60 @@ mod tests {
         assert_eq!(info.name, "Main");
         assert_eq!(info.trigger_device.as_deref(), Some("alsa_output.headset"));
         assert!(info.protected);
+
+        profile.channels.clear();
+        let raw = serde_json::to_string(&profile).unwrap();
+        assert!(profile_info_from_json("Main", &raw).is_none());
+    }
+
+    #[test]
+    fn profile_validation_rejects_bad_channels_and_assignments() {
+        let mut profile = valid_profile("Main");
+        profile.channels[0].name = "alsa_output.private".into();
+        assert!(normalize_and_validate(&mut profile).is_err());
+
+        let mut profile = valid_profile("Main");
+        profile.channels.push(profile.channels[0].clone());
+        assert!(normalize_and_validate(&mut profile).is_err());
+
+        let mut profile = valid_profile("Main");
+        for index in 1..=crate::persistence::channels::MAX_CHANNELS {
+            let mut channel = profile.channels[0].clone();
+            channel.name = format!("sink_extra_{index}");
+            profile.channels.push(channel);
+        }
+        assert!(normalize_and_validate(&mut profile).is_err());
+
+        let mut profile = valid_profile("Main");
+        profile
+            .assignments
+            .set("application.name", "Game", "sink_missing");
+        assert!(normalize_and_validate(&mut profile).is_err());
+    }
+
+    #[test]
+    fn profile_validation_clamps_dsp_and_removes_stale_channel_state() {
+        let mut profile = valid_profile("Main");
+        profile.channels[0].volume_percent = u8::MAX;
+        profile.mic.as_mut().unwrap().gain_percent = u8::MAX;
+        let mut config = crate::audio::types::EqConfig {
+            preamp_db: 99.0,
+            ..Default::default()
+        };
+        config.bands[0].freq_hz = f32::INFINITY;
+        profile.eq.set("sink_game", config);
+        profile.eq.set("sink_missing", Default::default());
+        profile.outputs.set("sink_missing", Some("device".into()));
+        profile.outputs.set_failover("sink_missing", false);
+
+        normalize_and_validate(&mut profile).expect("profile normalizes");
+
+        assert_eq!(profile.channels[0].volume_percent, 150);
+        assert_eq!(profile.mic.unwrap().gain_percent, 200);
+        assert_eq!(profile.eq.get("sink_game").preamp_db, 24.0);
+        assert_eq!(profile.eq.get("sink_game").bands[0].freq_hz, 1000.0);
+        assert!(!profile.eq.configs.contains_key("sink_missing"));
+        assert!(!profile.outputs.outputs.contains_key("sink_missing"));
+        assert!(!profile.outputs.no_failover.contains("sink_missing"));
     }
 }

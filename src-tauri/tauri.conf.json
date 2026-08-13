@@ -48,6 +48,7 @@
     "resources": {
       "../LICENSE": "licenses/GPL-3.0.txt",
       "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "vendor/LICENSE": "licenses/PIPEWIRE_RS_MIT.txt",
       "../third_party/licenses/APACHE-2.0.txt": "licenses/APACHE-2.0.txt",
       "../src/styles/fonts/LICENSE.txt": "licenses/FIRA_CODE_LICENSE.txt",
       "../src-tauri/assets/test-audio/LICENSES.md": "licenses/TEST_AUDIO_LICENSES.md",

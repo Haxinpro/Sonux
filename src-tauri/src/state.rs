@@ -123,12 +123,26 @@ impl AppState {
         // them as soon as the sinks exist.
         let channel_defs = crate::persistence::channels::Channels::load();
         let buses = crate::persistence::buses::Buses::load(&channel_defs);
-        let active_profile = crate::persistence::active::load();
+        let (active_profile, active_profile_data) =
+            match crate::persistence::active::load().map(|name| {
+                let profile = crate::persistence::profiles::load(&name);
+                (name, profile)
+            }) {
+                Some((name, Ok(profile))) => (Some(name), Some(profile)),
+                Some((name, Err(error))) => {
+                    // A live-bound active marker must never survive a missing
+                    // or malformed profile: autosave could otherwise replace
+                    // the recoverable file with the current mixer state.
+                    eprintln!("sonux: clearing invalid active profile {name:?}: {error}");
+                    if let Err(clear_error) = crate::persistence::active::save(None) {
+                        eprintln!("sonux: could not clear invalid active profile: {clear_error}");
+                    }
+                    (None, None)
+                }
+                None => (None, None),
+            };
         // Cache profile metadata once so autosave never has to re-read the
         // profile file merely to preserve fields it does not edit.
-        let active_profile_data = active_profile
-            .as_deref()
-            .and_then(|name| crate::persistence::profiles::load(name).ok());
         let active_trigger = active_profile_data
             .as_ref()
             .and_then(|profile| profile.trigger_device.clone());

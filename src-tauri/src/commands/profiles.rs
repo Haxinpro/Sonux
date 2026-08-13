@@ -758,7 +758,7 @@ pub fn create_blank_profile(
 ) -> Result<(), String> {
     let _profile_operation = state.lock_profile_operation()?;
     let name = profiles::sanitize_name(&name).map_err(|e| e.to_string())?;
-    if profiles::load(&name).is_ok() {
+    if profiles::exists(&name).map_err(|e| e.to_string())? {
         return Err(format!("profile \"{name}\" already exists"));
     }
     let channels = crate::persistence::channels::Channels::default()
@@ -806,7 +806,7 @@ pub fn copy_profile(
 ) -> Result<(), String> {
     let _profile_operation = state.lock_profile_operation()?;
     let name = profiles::sanitize_name(&name).map_err(|e| e.to_string())?;
-    if profiles::load(&name).is_ok() {
+    if profiles::exists(&name).map_err(|e| e.to_string())? {
         return Err(format!("profile \"{name}\" already exists"));
     }
     let mut profile = profiles::load(&source_name).map_err(|e| e.to_string())?;
@@ -831,7 +831,7 @@ pub fn rename_profile(
     if name == new_name {
         return Ok(());
     }
-    if profiles::load(&new_name).is_ok() {
+    if profiles::exists(&new_name).map_err(|e| e.to_string())? {
         return Err(format!("profile \"{new_name}\" already exists"));
     }
 

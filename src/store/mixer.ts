@@ -109,10 +109,10 @@ interface MixerStore {
   /** Bind/clear an output device that auto-loads a profile (Phase 5). */
   setProfileTrigger: (name: string, device: string | null) => Promise<void>;
   /** Create a clean-slate profile (saved, not applied). */
-  createBlankProfile: (name: string, micEnabled: boolean) => Promise<void>;
+  createBlankProfile: (name: string, micEnabled: boolean) => Promise<boolean>;
   /** Copy an existing profile's audio setup into a new profile. */
-  copyProfile: (sourceName: string, name: string) => Promise<void>;
-  renameProfile: (name: string, newName: string) => Promise<void>;
+  copyProfile: (sourceName: string, name: string) => Promise<boolean>;
+  renameProfile: (name: string, newName: string) => Promise<boolean>;
   /** A profile was switched outside the UI (tray) - sync everything. */
   onProfileChanged: (name: string) => Promise<void>;
   /** App history (live + gone + ignored). */
@@ -184,8 +184,8 @@ interface MixerStore {
   routeApp: (streamIndex: number, sinkName: string) => Promise<void>;
   setAppVolume: (streamIndex: number, volume: number) => Promise<void>;
   fetchProfiles: () => Promise<void>;
-  loadProfile: (name: string) => Promise<void>;
-  deleteProfile: (name: string) => Promise<void>;
+  loadProfile: (name: string) => Promise<boolean>;
+  deleteProfile: (name: string) => Promise<boolean>;
   /** Set or clear (empty string) a persistent display name for an app. */
   renameApp: (stream: AppStream, alias: string) => Promise<void>;
 }
@@ -659,33 +659,40 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   createBlankProfile: async (name, micEnabled) => {
     try {
       await invoke("create_blank_profile", { name, micEnabled });
-      await get().fetchProfiles();
-      // Switch to the fresh profile right away - creating a blank slate
-      // and not seeing anything change reads as a bug.
-      await get().loadProfile(name);
     } catch (e) {
       set({ error: String(e) });
+      return false;
     }
+    await get().fetchProfiles();
+    // The profile now exists even if switching to it fails. Report the
+    // synchronization error, but let lifecycle UI close instead of offering
+    // a retry that can only fail with "already exists".
+    await get().loadProfile(name);
+    return true;
   },
 
   copyProfile: async (sourceName, name) => {
     try {
       await invoke("copy_profile", { sourceName, name });
-      await get().fetchProfiles();
-      await get().loadProfile(name);
     } catch (e) {
       set({ error: String(e) });
+      return false;
     }
+    await get().fetchProfiles();
+    await get().loadProfile(name);
+    return true;
   },
 
   renameProfile: async (name, newName) => {
     try {
       await invoke("rename_profile", { name, newName });
-      if (get().activeProfile === name) set({ activeProfile: newName });
-      await get().fetchProfiles();
     } catch (e) {
       set({ error: String(e) });
+      return false;
     }
+    if (get().activeProfile === name) set({ activeProfile: newName });
+    await get().fetchProfiles();
+    return true;
   },
 
   fetchSeenApps: async () => {
@@ -755,20 +762,28 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
         get().fetchSeenApps(),
         get().fetchBuses(),
       ]);
+      return true;
     } catch (e) {
       set({ error: String(e) });
+      return false;
     }
   },
 
   deleteProfile: async (name) => {
     try {
       await invoke("delete_profile", { name });
+    } catch (e) {
+      set({ error: String(e) });
+      return false;
+    }
+    try {
       const active = await invoke<string | null>("get_active_profile");
       if (active && active !== get().activeProfile) await get().onProfileChanged(active);
       else await get().fetchProfiles();
     } catch (e) {
       set({ error: String(e) });
     }
+    return true;
   },
 
   addChannel: async (label, icon, spatial = false) => {

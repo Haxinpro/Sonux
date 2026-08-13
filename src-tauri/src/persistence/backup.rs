@@ -241,16 +241,16 @@ fn validate_profiles(files: &BTreeMap<String, String>) -> Result<Vec<String>, Si
         let Some((_, stem)) = profile_path_parts(relative) else {
             continue;
         };
-        let profile: crate::persistence::profiles::Profile = parse_json(relative, contents)?;
+        let mut profile: crate::persistence::profiles::Profile = parse_json(relative, contents)?;
         let safe_name = crate::persistence::profiles::sanitize_name(stem)?;
         if safe_name != stem || profile.name != stem {
             return Err(SinkError::Config(format!(
                 "backup profile name does not match its file: {relative}"
             )));
         }
-        crate::persistence::profiles::validate_mic_channels(&profile).map_err(|error| {
+        crate::persistence::profiles::normalize_and_validate(&mut profile).map_err(|error| {
             SinkError::Config(format!(
-                "backup profile has invalid microphones in {relative}: {error}"
+                "backup contains an invalid profile {relative}: {error}"
             ))
         })?;
         let channels = validate_channel_names(
@@ -707,7 +707,7 @@ mod tests {
 
         let error = validate_managed_payload(&files, &BTreeMap::new())
             .expect_err("foreign microphone nodes must be rejected");
-        assert!(error.to_string().contains("invalid microphones"));
+        assert!(error.to_string().contains("invalid profile"));
     }
 
     #[test]

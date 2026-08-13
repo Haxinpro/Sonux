@@ -25,3 +25,10 @@ in `src/styles/fonts/LICENSE.txt`.
 
 The bundled Material Symbols icon font is distributed under Apache-2.0. The
 Apache 2.0 text is in `third_party/licenses/APACHE-2.0.txt`.
+
+## pipewire-rs system bindings
+
+The patched `libspa-sys` and `pipewire-sys` crates under `src-tauri/vendor`
+come from pipewire-rs v0.10.0 and are licensed under the MIT License. The
+upstream license text is packaged as `licenses/PIPEWIRE_RS_MIT.txt`; the patch
+rationale is recorded in `src-tauri/vendor/README.md` in the source tree.

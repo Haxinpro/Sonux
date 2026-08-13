@@ -166,8 +166,10 @@ export function ProfileSwitchingScreen({
   const createProfile = async () => {
     const name = newProfileName.trim();
     if (!name) return;
-    if (newProfileMode === "copy" && copySource) await copyProfile(copySource, name);
-    else await createBlankProfile(name, newProfileMicEnabled);
+    const succeeded = newProfileMode === "copy" && copySource
+      ? await copyProfile(copySource, name)
+      : await createBlankProfile(name, newProfileMicEnabled);
+    if (!succeeded) return;
     setSelectedProfileName(name);
     setNewProfileName("");
     setNewProfileMode("fresh");
@@ -188,7 +190,7 @@ export function ProfileSwitchingScreen({
     const name = deletingProfileName;
     if (!name) return;
     const remaining = profiles.filter((profile) => profile.name !== name);
-    await deleteProfile(name);
+    if (!await deleteProfile(name)) return;
     setDeletingProfileName(null);
     setSelectedProfileName(
       remaining.find((profile) => profile.name === activeProfile)?.name
@@ -206,7 +208,7 @@ export function ProfileSwitchingScreen({
     const oldName = renamingProfileName;
     const newName = renameDraft.trim();
     if (!oldName || !newName || oldName === newName) return;
-    await renameProfile(oldName, newName);
+    if (!await renameProfile(oldName, newName)) return;
     if (selectedProfileName === oldName) setSelectedProfileName(newName);
     setRenamingProfileName(null);
     setRenameDraft("");
