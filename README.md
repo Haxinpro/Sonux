@@ -28,6 +28,18 @@ for upstream and bundled-asset notices.
 Sonux is an independent project and is not affiliated with or endorsed by
 SteelSeries.
 
+## What's new in 1.1.0
+
+Version 1.1.0 adds full profile management and automatic switching, validated
+configuration backups, multiple processed microphone channels, live dBFS
+meters, spatial custom channels, and improved device routing and failover
+controls. It also hardens PipeWire recovery, configuration persistence, and
+concurrent profile switching, and makes the main controls and dialogs more
+keyboard accessible.
+
+See the [changelog](CHANGELOG.md) for the complete update notes and upgrade
+information.
+
 ## Project status and community
 
 I originally built Sonux as a small personal learning project because I liked
@@ -70,7 +82,8 @@ welcome.
 - Control channel volume, mute, output device, EQ, and playback processing.
 - Create recordable mixes for OBS and other capture software.
 - Process one or more microphone channels with gain, EQ, gate, compressor, and limiter.
-- Save profiles, switch them automatically by output device, and use optional global mute shortcuts.
+- Save profiles, switch them automatically by linked applications or output
+  devices, and use optional global mute shortcuts.
 - Create and restore configuration backups.
 - Render Game and Media 7.1 channels to binaural stereo for headphones.
 
@@ -151,13 +164,10 @@ Configuration is stored as plain JSON under `~/.config/sonux`.
 > targets rather than tested compatibility claims. All installations require
 > PipeWire with PulseAudio compatibility and WirePlumber 0.5 or newer.
 
-Sonux 1.0.1 downloads:
-
-- [Arch Linux package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/sonux-bin-1.0.1-1-x86_64.pkg.tar.zst)
-- [Debian package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux_1.0.1_amd64.deb)
-- [RPM package](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux-1.0.1-1.x86_64.rpm)
-- [AppImage](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/Sonux_1.0.1_amd64.AppImage)
-- [SHA-256 checksums](https://github.com/Haxinpro/Sonux/releases/download/v1.0.1/SHA256SUMS)
+Download the packages and `SHA256SUMS` file from the
+[latest GitHub release](https://github.com/Haxinpro/Sonux/releases/latest).
+Using the stable latest-release page keeps these instructions current when a
+new version is published.
 
 | Format | Intended systems | Installation command |
 | --- | --- | --- |

@@ -42,15 +42,19 @@ consider opening an issue first to discuss the proposal.
 ## Development Setup
 
 Install the system dependencies listed in the
-[README](README.md#dependencies), then install the JavaScript dependencies:
+[README](README.md#requirements-and-build-dependencies), then install the
+JavaScript dependencies:
 
 ```bash
 npm ci
 ```
+
 Run the application in development mode:
+
 ```bash
 npm run tauri dev
 ```
+
 ## Checks
 
 Before submitting a pull request, run the relevant checks:

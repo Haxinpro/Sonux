@@ -10,7 +10,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -128,7 +128,11 @@ jobs:
   publish:
     needs: [build, arch]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: release
@@ -148,6 +152,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes \
+          awk -v version="$VERSION" '
+            $0 == "## [" version "]" || \
+              index($0, "## [" version "] - ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --notes-file release-notes.md \
+            --target "$GITHUB_SHA" \
             --title "Sonux $TAG" upload/*
