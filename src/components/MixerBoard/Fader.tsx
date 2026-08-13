@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef } from "react";
+import { handleSliderKey } from "../../lib/sliderKeyboard";
 
 interface FaderProps {
   value: number;
   max: number;
+  ariaLabel: string;
   onChange: (value: number) => void;
 }
 
 /** Vertical channel fader (pointer-driven, design-system styling). */
-export function Fader({ value, max, onChange }: Readonly<FaderProps>) {
+export function Fader({ value, max, ariaLabel, onChange }: Readonly<FaderProps>) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
@@ -50,6 +52,17 @@ export function Fader({ value, max, onChange }: Readonly<FaderProps>) {
       <div
         className="fader-track"
         ref={trackRef}
+        role="slider"
+        tabIndex={0}
+        aria-label={ariaLabel}
+        aria-orientation="vertical"
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={`${value}%`}
+        onKeyDown={(event) => handleSliderKey(event, {
+          min: 0, max, step: 1, value, onChange,
+        })}
         onPointerDown={(e) => {
           dragging.current = true;
           setFromEvent(e.clientY);

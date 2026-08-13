@@ -50,6 +50,14 @@ pub fn poll_app_streams(state: &AppState) -> Result<Vec<AppStream>, String> {
     // transaction. Taking this after the snapshot lets a completed profile
     // switch turn old routes into assignments in the new profile.
     let _profile_operation = state.lock_profile_operation()?;
+    poll_app_streams_locked(state)
+}
+
+/// The application-stream polling transaction, for callers that already hold
+/// `profile_operations`. Keeping lock acquisition outside this helper lets the
+/// coherent profile snapshot reuse the exact routing/history transaction
+/// without recursively locking the non-reentrant profile mutex.
+pub(crate) fn poll_app_streams_locked(state: &AppState) -> Result<Vec<AppStream>, String> {
     let mut streams = state
         .backend
         .list_app_streams()
@@ -221,6 +229,143 @@ pub fn get_output_devices(state: State<'_, AppState>) -> Result<Vec<OutputDevice
         .map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::audio::backend::AudioBackend;
+    use crate::audio::types::{EqConfig, MicConfig, SinkControlState};
+    use crate::error::SinkError;
+
+    struct RoutingBackend {
+        stream: AppStream,
+        moves: Mutex<Vec<(u32, String)>>,
+    }
+
+    impl AudioBackend for RoutingBackend {
+        fn create_virtual_sink(&self, _: &str, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn destroy_virtual_sink(&self, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn list_app_streams(&self) -> Result<Vec<AppStream>, SinkError> {
+            Ok(vec![self.stream.clone()])
+        }
+        fn list_output_devices(&self) -> Result<Vec<OutputDevice>, SinkError> {
+            Ok(Vec::new())
+        }
+        fn list_sink_control_states(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<SinkControlState>, SinkError> {
+            Ok(Vec::new())
+        }
+        fn set_sink_volume(&self, _: &str, _: u8) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_sink_mute(&self, _: &str, _: bool) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn move_stream_to_sink(&self, index: u32, sink: &str) -> Result<(), SinkError> {
+            self.moves.lock().unwrap().push((index, sink.to_string()));
+            Ok(())
+        }
+        fn set_app_volume(&self, _: u32, _: u8) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_channel_output(&self, _: &str, _: Option<&str>) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_channel_eq(&self, _: &str, _: &EqConfig) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn create_bus(&self, _: &str, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn destroy_bus(&self, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_bus_members(&self, _: &str, _: &[String]) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_monitor(&self, _: &str, _: bool) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn list_input_devices(&self) -> Result<Vec<OutputDevice>, SinkError> {
+            Ok(Vec::new())
+        }
+        fn get_default_devices(&self) -> Result<(Option<String>, Option<String>), SinkError> {
+            Ok((None, None))
+        }
+        fn set_default_output(&self, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_default_input(&self, _: &str) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn set_mic_config(&self, _: &MicConfig) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn locked_poll_enforces_changed_profile_assignment_and_snapshot_fields_agree() {
+        let identity_prop = "application.name";
+        let identity_value = "sonux-snapshot-route-test";
+        let backend = Arc::new(RoutingBackend {
+            stream: AppStream {
+                index: 41,
+                app_name: "Sonux Snapshot Route Test".into(),
+                match_prop: identity_prop.into(),
+                match_value: identity_value.into(),
+                alias: None,
+                icon_name: None,
+                icon_path: None,
+                pid: None,
+                assigned_sink: None,
+                volume_percent: 100,
+                muted: false,
+                active: true,
+            },
+            moves: Mutex::new(Vec::new()),
+        });
+        let state = AppState::for_test(backend.clone());
+        let now = crate::persistence::unix_now();
+        {
+            let mut mixer = state.lock_mixer().unwrap();
+            mixer.initialized = true;
+            mixer.seen.upsert(
+                identity_prop,
+                identity_value,
+                "Sonux Snapshot Route Test",
+                None,
+                now,
+            );
+            mixer.seen_saved_at = now;
+            mixer
+                .assignments
+                .set(identity_prop, identity_value, "sink_a");
+            mixer
+                .assignments
+                .set(identity_prop, identity_value, "sink_b");
+        }
+
+        let _profile_operation = state.lock_profile_operation().unwrap();
+        let streams = poll_app_streams_locked(&state).unwrap();
+        let seen = crate::commands::apps::snapshot_seen_apps(&state.lock_mixer().unwrap());
+
+        assert_eq!(
+            backend.moves.lock().unwrap().as_slice(),
+            &[(41, "sink_b".into())]
+        );
+        assert_eq!(streams[0].assigned_sink.as_deref(), Some("sink_b"));
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].assigned_sink.as_deref(), Some("sink_b"));
+    }
+}
+
 /// Create the user's virtual sinks and restore volume/mute from the active
 /// profile. Idempotent: safe to call again if the sinks already exist.
 #[tauri::command]
@@ -385,6 +530,18 @@ pub fn init_virtual_devices(
         format!("list profiles during startup: {error}")
     })?;
     if profile_list.is_empty() {
+        if crate::persistence::profiles::has_any_profile_files().map_err(|error| {
+            if let Ok(mut mixer) = state.lock_mixer() {
+                mixer.initialized = false;
+            }
+            format!("inspect profile directory during startup: {error}")
+        })? {
+            state.lock_mixer()?.initialized = false;
+            return Err(
+                "no valid profiles remain; existing profile files were preserved for recovery"
+                    .into(),
+            );
+        }
         let default = {
             let mixer = state.lock_mixer()?;
             crate::persistence::profiles::Profile {

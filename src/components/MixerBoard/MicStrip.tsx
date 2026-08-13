@@ -120,6 +120,7 @@ export function MicStrip({
         <Fader
           value={micConfig.gain_percent}
           max={MAX_MIC_GAIN}
+          ariaLabel={`${micConfig.output_label} gain`}
           onChange={(v) => void setMicConfig({ gain_percent: v })}
         />
         <VuMeter

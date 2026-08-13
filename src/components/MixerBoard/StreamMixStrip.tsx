@@ -264,7 +264,12 @@ export function BusStrip({
       </div>
 
       <div className="strip-body">
-        <Fader value={volume} max={MAX_VOLUME} onChange={applyVolume} />
+        <Fader
+          value={volume}
+          max={MAX_VOLUME}
+          ariaLabel={`${bus.label} mix volume`}
+          onChange={applyVolume}
+        />
         <VuMeter source={bus.name} enabled={!muted} />
       </div>
 

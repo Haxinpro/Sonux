@@ -274,6 +274,7 @@ export function ChannelStrip({
         <Fader
           value={channel.volume_percent}
           max={MAX_VOLUME}
+          ariaLabel={`${channel.label} volume`}
           onChange={(v) => void setChannelVolume(channel.name, v)}
         />
         <VuMeter source={channel.name} enabled={!channel.muted} />

@@ -17,6 +17,128 @@ pub mod seen;
 pub mod window;
 pub mod wireplumber;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+thread_local! {
+    static CONFIG_QUIESCE_OWNER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CONFIG_WRITE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+struct ConfigWriteBarrier {
+    lock: RwLock<()>,
+    quiesced: AtomicBool,
+}
+
+impl ConfigWriteBarrier {
+    fn shared(&self) -> std::io::Result<RwLockReadGuard<'_, ()>> {
+        if self.quiesced.load(Ordering::Acquire) {
+            return Err(std::io::Error::other(
+                "configuration is quiesced while Sonux restarts",
+            ));
+        }
+        let guard = self
+            .lock
+            .read()
+            .map_err(|_| std::io::Error::other("configuration write barrier is poisoned"))?;
+        if self.quiesced.load(Ordering::Acquire) {
+            return Err(std::io::Error::other(
+                "configuration is quiesced while Sonux restarts",
+            ));
+        }
+        Ok(guard)
+    }
+
+    fn exclusive(&self) -> std::io::Result<RwLockWriteGuard<'_, ()>> {
+        self.lock
+            .write()
+            .map_err(|_| std::io::Error::other("configuration write barrier is poisoned"))
+    }
+}
+
+static CONFIG_WRITES: LazyLock<ConfigWriteBarrier> = LazyLock::new(|| ConfigWriteBarrier {
+    lock: RwLock::new(()),
+    quiesced: AtomicBool::new(false),
+});
+
+pub(crate) enum ConfigWritePermit {
+    Shared(#[allow(dead_code)] RwLockReadGuard<'static, ()>),
+    Nested,
+    QuiesceOwner,
+}
+
+impl Drop for ConfigWritePermit {
+    fn drop(&mut self) {
+        if matches!(self, Self::Shared(_) | Self::Nested) {
+            CONFIG_WRITE_DEPTH.set(CONFIG_WRITE_DEPTH.get().saturating_sub(1));
+        }
+    }
+}
+
+pub(crate) fn begin_config_write() -> std::io::Result<ConfigWritePermit> {
+    if CONFIG_QUIESCE_OWNER.get() {
+        return Ok(ConfigWritePermit::QuiesceOwner);
+    }
+    if CONFIG_WRITE_DEPTH.get() > 0 {
+        CONFIG_WRITE_DEPTH.set(CONFIG_WRITE_DEPTH.get() + 1);
+        return Ok(ConfigWritePermit::Nested);
+    }
+    let guard = CONFIG_WRITES.shared()?;
+    CONFIG_WRITE_DEPTH.set(1);
+    Ok(ConfigWritePermit::Shared(guard))
+}
+
+pub struct ConfigQuiesceGuard {
+    guard: Option<RwLockWriteGuard<'static, ()>>,
+    committed: bool,
+}
+
+pub struct ConfigSnapshotGuard {
+    #[allow(dead_code)]
+    guard: RwLockWriteGuard<'static, ()>,
+}
+
+/// Wait for in-flight configuration writers and exclude new ones for the
+/// lifetime of the guard, without changing the permanent quiescence flag.
+pub fn lock_config_snapshot() -> std::io::Result<ConfigSnapshotGuard> {
+    Ok(ConfigSnapshotGuard {
+        guard: CONFIG_WRITES.exclusive()?,
+    })
+}
+
+impl ConfigQuiesceGuard {
+    pub fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for ConfigQuiesceGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            CONFIG_WRITES.quiesced.store(false, Ordering::Release);
+        }
+        self.guard.take();
+        CONFIG_QUIESCE_OWNER.set(false);
+    }
+}
+
+/// Wait for every in-flight configuration writer, then reject all future
+/// writes until the current process exits. Call `commit` once destructive
+/// replacement has begun; dropping an uncommitted guard reopens writes.
+pub fn quiesce_config_writes() -> std::io::Result<ConfigQuiesceGuard> {
+    let guard = CONFIG_WRITES.exclusive()?;
+    CONFIG_QUIESCE_OWNER.set(true);
+    CONFIG_WRITES.quiesced.store(true, Ordering::Release);
+    Ok(ConfigQuiesceGuard {
+        guard: Some(guard),
+        committed: false,
+    })
+}
+
+pub fn config_writes_quiesced() -> bool {
+    CONFIG_WRITES.quiesced.load(Ordering::Acquire)
+}
+
 /// Seconds since the Unix epoch, or 0 if the clock predates it.
 pub fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -47,6 +169,7 @@ pub fn migrate_legacy_config_dir() -> std::io::Result<()> {
 /// routing rules and app history are nobody else's business. Used by every
 /// save path that writes under `$XDG_CONFIG_HOME/sonux`.
 pub fn ensure_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let _write = begin_config_write()?;
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]
     {
@@ -67,6 +190,7 @@ pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let _write = begin_config_write()?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -108,6 +232,11 @@ pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+pub fn remove_file(path: &std::path::Path) -> std::io::Result<()> {
+    let _write = begin_config_write()?;
+    std::fs::remove_file(path)
 }
 
 /// Factory reset: delete everything Sonux or its legacy namespace ever saved - the whole config
@@ -211,6 +340,61 @@ mod tests {
             .ends_with(".tmp")));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exclusive_barrier_waits_for_an_in_flight_writer() {
+        let barrier = std::sync::Arc::new(ConfigWriteBarrier {
+            lock: RwLock::new(()),
+            quiesced: AtomicBool::new(false),
+        });
+        let writer = barrier.shared().unwrap();
+        let other = std::sync::Arc::clone(&barrier);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _exclusive = other.exclusive().unwrap();
+            other.quiesced.store(true, Ordering::Release);
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(25))
+            .is_err());
+        drop(writer);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        handle.join().unwrap();
+        assert!(barrier.quiesced.load(Ordering::Acquire));
+        assert!(barrier.shared().is_err());
+    }
+
+    #[test]
+    fn snapshot_exclusion_is_temporary_and_waits_for_writer() {
+        let barrier = std::sync::Arc::new(ConfigWriteBarrier {
+            lock: RwLock::new(()),
+            quiesced: AtomicBool::new(false),
+        });
+        let writer = barrier.shared().unwrap();
+        let other = std::sync::Arc::clone(&barrier);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let exclusive = other.exclusive().unwrap();
+            acquired_tx.send(()).unwrap();
+            drop(exclusive);
+        });
+        assert!(acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(25))
+            .is_err());
+        drop(writer);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        handle.join().unwrap();
+        assert!(!barrier.quiesced.load(Ordering::Acquire));
+        assert!(barrier.shared().is_ok());
     }
 
     #[test]

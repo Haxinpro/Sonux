@@ -159,6 +159,7 @@ export function MicScreen() {
                   <HSlider
                     value={micConfig.gain_percent}
                     max={MAX_MIC_GAIN}
+                    ariaLabel={`${micConfig.output_label} gain`}
                     onChange={(v) => void updateMic({ gain_percent: v })}
                   />
                 </div>

@@ -408,6 +408,10 @@ pub fn get_input_devices(state: State<'_, AppState>) -> Result<Vec<OutputDevice>
 /// Applications currently recording from the processed microphone.
 #[tauri::command]
 pub fn get_mic_clients(state: State<'_, AppState>) -> Result<Vec<MicClient>, String> {
+    snapshot_mic_clients(state.inner())
+}
+
+pub(crate) fn snapshot_mic_clients(state: &AppState) -> Result<Vec<MicClient>, String> {
     let mut clients = state
         .backend
         .list_mic_clients()

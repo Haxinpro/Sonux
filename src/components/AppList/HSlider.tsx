@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef } from "react";
+import { handleSliderKey } from "../../lib/sliderKeyboard";
 
 interface HSliderProps {
   value: number;
   max: number;
+  ariaLabel: string;
   onChange: (value: number) => void;
   valueLabel?: string;
 }
 
 /** Horizontal per-app volume slider. */
-export function HSlider({ value, max, onChange, valueLabel }: Readonly<HSliderProps>) {
+export function HSlider({ value, max, ariaLabel, onChange, valueLabel }: Readonly<HSliderProps>) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
@@ -45,6 +47,16 @@ export function HSlider({ value, max, onChange, valueLabel }: Readonly<HSliderPr
       <div
         className="hs-track"
         ref={trackRef}
+        role="slider"
+        tabIndex={0}
+        aria-label={ariaLabel}
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={valueLabel ?? `${value}%`}
+        onKeyDown={(event) => handleSliderKey(event, {
+          min: 0, max, step: 1, value, onChange,
+        })}
         onPointerDown={(e) => {
           dragging.current = true;
           setFromEvent(e.clientX);

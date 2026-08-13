@@ -25,52 +25,124 @@ interface TooltipContent {
 export function Tooltip() {
   const [content, setContent] = useState<TooltipContent | null>(null);
   const tipRef = useRef<HTMLDivElement>(null);
-  const anchor = useRef<{ el: Element; title: string | null } | null>(null);
+  const anchor = useRef<Element | null>(null);
   const timer = useRef<number>();
 
   useEffect(() => {
-    const restore = () => {
-      if (anchor.current && anchor.current.title !== null) {
-        anchor.current.el.setAttribute("title", anchor.current.title);
+    const suppressed = new Map<Element, string>();
+    let primary: { el: Element; text: string; heading?: string } | null = null;
+    let visible = false;
+
+    const restoreAll = () => {
+      for (const [element, title] of suppressed) {
+        if (element.getAttribute("title") === "") element.setAttribute("title", title);
       }
+      suppressed.clear();
       anchor.current = null;
     };
     const hide = () => {
       window.clearTimeout(timer.current);
-      restore();
+      primary = null;
+      visible = false;
+      restoreAll();
       setContent(null);
     };
 
-    const onOver = (e: MouseEvent) => {
-      const target = e.target as Element | null;
-      if (!target?.closest) return;
-      // Still inside the element we're already tracking: keep it up.
-      if (anchor.current?.el.contains(target)) return;
-      const el = target.closest("[data-tooltip-text], [title]");
-      if (!el) return;
-      const title = el.getAttribute("title");
-      const detailedText = el.getAttribute("data-tooltip-text");
-      const tooltipText = detailedText ?? title;
-      if (!tooltipText?.trim()) return;
-      hide();
-      // Stash the title and drop it so the native tooltip can't fire; the
-      // layout effect positions ours once the delay elapses.
-      anchor.current = { el, title };
-      if (title !== null) el.removeAttribute("title");
-      timer.current = window.setTimeout(
-        () => setContent({
-          heading: detailedText ? (el.getAttribute("data-tooltip-title") ?? undefined) : undefined,
-          text: tooltipText,
-        }),
-        TOOLTIP_DELAY_MS,
-      );
+    const reconcile = (target: Element | null) => {
+      const ancestry: Element[] = [];
+      for (let element = target; element; element = element.parentElement) ancestry.push(element);
+      const inside = new Set(ancestry);
+
+      for (const [element, title] of [...suppressed]) {
+        if (!inside.has(element)) {
+          if (element.getAttribute("title") === "") element.setAttribute("title", title);
+          suppressed.delete(element);
+        }
+      }
+      // Suppress every titled ancestor, not only the nearest one. Otherwise
+      // entering a titled child can revive the parent's native tooltip.
+      for (const element of ancestry) {
+        const liveTitle = element.getAttribute("title");
+        if (liveTitle !== null && liveTitle !== "") {
+          suppressed.set(element, liveTitle);
+          // Leave the title present but empty to suppress the native tooltip and
+          // ensure a later removeAttribute call produces an observable mutation.
+          element.setAttribute("title", "");
+        }
+      }
+
+      let next: typeof primary = null;
+      for (const element of ancestry) {
+        const detailed = element.getAttribute("data-tooltip-text");
+        const text = detailed ?? suppressed.get(element);
+        if (text?.trim()) {
+          next = {
+            el: element,
+            text,
+            heading: detailed
+              ? (element.getAttribute("data-tooltip-title") ?? undefined)
+              : undefined,
+          };
+          break;
+        }
+      }
+      if (!next) {
+        window.clearTimeout(timer.current);
+        primary = null;
+        visible = false;
+        anchor.current = null;
+        setContent(null);
+        return;
+      }
+      anchor.current = next.el;
+      if (primary?.el === next.el && primary.text === next.text && primary.heading === next.heading) return;
+      const sameAnchor = primary?.el === next.el;
+      primary = next;
+      window.clearTimeout(timer.current);
+      if (sameAnchor && visible) {
+        setContent({ heading: next.heading, text: next.text });
+      } else {
+        visible = false;
+        setContent(null);
+        timer.current = window.setTimeout(() => {
+          if (primary === next) {
+            visible = true;
+            setContent({ heading: next.heading, text: next.text });
+          }
+        }, TOOLTIP_DELAY_MS);
+      }
     };
 
+    const onOver = (event: MouseEvent) => reconcile(event.target as Element | null);
+
     const onOut = (e: MouseEvent) => {
-      if (!anchor.current) return;
-      const to = e.relatedTarget as Node | null;
-      if (e.target === anchor.current.el && !anchor.current.el.contains(to)) hide();
+      const related = e.relatedTarget;
+      reconcile(related instanceof Element ? related : null);
     };
+
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const element = record.target as Element;
+        if (!suppressed.has(element)) continue;
+        const liveTitle = element.getAttribute("title");
+        if (liveTitle === "") continue; // our own suppression mutation
+        if (liveTitle === null) {
+          // Application code removed the hovered title. Discard its saved value
+          // so it is not restored on exit, then try the next tooltip ancestor.
+          suppressed.delete(element);
+          reconcile(element);
+          continue;
+        }
+        suppressed.set(element, liveTitle);
+        element.setAttribute("title", "");
+        if (primary?.el === element) reconcile(element);
+      }
+    });
+    observer.observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["title"],
+    });
 
     document.addEventListener("mouseover", onOver, true);
     document.addEventListener("mouseout", onOut, true);
@@ -83,8 +155,9 @@ export function Tooltip() {
       window.removeEventListener("scroll", hide, true);
       document.removeEventListener("pointerdown", hide, true);
       window.removeEventListener("blur", hide);
+      observer.disconnect();
       window.clearTimeout(timer.current);
-      restore();
+      restoreAll();
     };
   }, []);
 
@@ -92,7 +165,7 @@ export function Tooltip() {
   useLayoutEffect(() => {
     const tip = tipRef.current;
     if (content === null || !tip || !anchor.current) return;
-    const a = anchor.current.el.getBoundingClientRect();
+    const a = anchor.current.getBoundingClientRect();
     const t = tip.getBoundingClientRect();
     let left = a.left + a.width / 2 - t.width / 2;
     left = Math.max(MARGIN, Math.min(left, window.innerWidth - t.width - MARGIN));

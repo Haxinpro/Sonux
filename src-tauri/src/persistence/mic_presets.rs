@@ -100,7 +100,7 @@ pub fn save(name: &str, config: &MicConfig) -> Result<(), SinkError> {
 pub fn delete(name: &str) -> Result<(), SinkError> {
     let name = super::profiles::sanitize_name(name)?;
     let path = presets_dir()?.join(format!("{name}.json"));
-    fs::remove_file(path).map_err(SinkError::from)
+    super::remove_file(&path).map_err(SinkError::from)
 }
 
 #[cfg(test)]

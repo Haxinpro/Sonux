@@ -136,16 +136,8 @@ pub(crate) fn normalize_and_validate(profile: &mut Profile) -> Result<(), SinkEr
     }
     let mut channel_names = HashSet::new();
     for channel in &mut profile.channels {
-        let suffix = channel.name.strip_prefix("sink_");
-        if suffix.is_none_or(|suffix| {
-            suffix.is_empty()
-                || channel.name.len() > 64
-                || !suffix
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        }) || crate::persistence::channels::is_reserved_sink_name(&channel.name)
-            || !channel_names.insert(channel.name.clone())
-        {
+        crate::persistence::channels::validate_channel_name(&channel.name)?;
+        if !channel_names.insert(channel.name.clone()) {
             return Err(SinkError::Config(format!(
                 "invalid or duplicate profile channel: {}",
                 channel.name
@@ -213,6 +205,31 @@ fn profile_path(name: &str) -> Result<PathBuf, SinkError> {
 /// to repair or recover.
 pub fn exists(name: &str) -> Result<bool, SinkError> {
     profile_path(name)?.try_exists().map_err(Into::into)
+}
+
+pub fn has_any_profile_files() -> Result<bool, SinkError> {
+    let dir = profiles_dir()?;
+    has_profile_files_in(&dir)
+}
+
+fn has_profile_files_in(dir: &std::path::Path) -> Result<bool, SinkError> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn list() -> Result<Vec<ProfileInfo>, SinkError> {
@@ -317,7 +334,7 @@ pub fn load(name: &str) -> Result<Profile, SinkError> {
     Ok(profile)
 }
 
-fn migrate_legacy_mic_nodes(profile: &mut Profile) {
+pub(crate) fn migrate_legacy_mic_nodes(profile: &mut Profile) {
     // Early multiple-mic builds used the playback-sink namespace for
     // secondary virtual sources. Move them into a distinct source namespace
     // so a user output channel can never collide with a microphone.
@@ -330,7 +347,7 @@ fn migrate_legacy_mic_nodes(profile: &mut Profile) {
 
 pub fn delete(name: &str) -> Result<(), SinkError> {
     let path = profile_path(name)?;
-    fs::remove_file(&path).map_err(|e| {
+    super::remove_file(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             SinkError::Config(format!("no such profile: {name}"))
         } else {
@@ -501,5 +518,19 @@ mod tests {
         assert!(!profile.eq.configs.contains_key("sink_missing"));
         assert!(!profile.outputs.outputs.contains_key("sink_missing"));
         assert!(!profile.outputs.no_failover.contains("sink_missing"));
+    }
+
+    #[test]
+    fn raw_profile_presence_is_independent_of_validity() {
+        let dir = std::env::temp_dir().join(format!(
+            "sonux-profile-presence-{}-{}",
+            std::process::id(),
+            crate::persistence::unix_now()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!has_profile_files_in(&dir).unwrap());
+        fs::write(dir.join("Default.json"), "{ damaged").unwrap();
+        assert!(has_profile_files_in(&dir).unwrap());
+        let _ = fs::remove_dir_all(dir);
     }
 }

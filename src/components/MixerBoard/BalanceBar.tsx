@@ -4,6 +4,7 @@ import type { VirtualSink } from "../../types";
 import { Ms } from "../Icons";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
+import { handleSliderKey } from "../../lib/sliderKeyboard";
 
 /**
  * ChatMix-style balance between two user-picked channels. Stateless: the
@@ -38,7 +39,9 @@ export function BalanceBar() {
   const [pickingB, setPickingB] = useState(false);
 
   // pos ∈ [−1, +1]: + favors B (A ducked), − favors A (B ducked).
-  const pos = a && b ? (b.volume_percent - a.volume_percent) / 100 : 0;
+  const pos = a && b
+    ? Math.max(-1, Math.min(1, (b.volume_percent - a.volume_percent) / 100))
+    : 0;
 
   const apply = (p: number) => {
     if (!a || !b) return;
@@ -117,6 +120,20 @@ export function BalanceBar() {
       <div
         className="bal-track"
         ref={trackRef}
+        role="slider"
+        tabIndex={0}
+        aria-label={`${a.label} and ${b.label} balance`}
+        aria-valuemin={-100}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pos * 100)}
+        aria-valuetext={`${a.label} ${a.volume_percent}%, ${b.label} ${b.volume_percent}%`}
+        onKeyDown={(event) => handleSliderKey(event, {
+          min: -100,
+          max: 100,
+          step: 4,
+          value: Math.round(pos * 100),
+          onChange: (next) => apply(next / 100),
+        })}
         title={`${a.label} ${a.volume_percent}% / ${b.label} ${b.volume_percent}% - slide toward a side to duck the other`}
         onPointerDown={(e) => {
           dragging.current = true;

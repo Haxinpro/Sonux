@@ -94,7 +94,7 @@ pub fn write(assignments: &Assignments) -> Result<(), SinkError> {
         }
         None => {
             if path.exists() {
-                fs::remove_file(&path)?;
+                super::remove_file(&path)?;
             }
         }
     }

@@ -79,7 +79,11 @@ pub struct SeenApp {
 #[tauri::command]
 pub fn get_seen_apps(state: State<'_, AppState>) -> Result<Vec<SeenApp>, String> {
     let mixer = state.lock_mixer()?;
-    Ok(mixer
+    Ok(snapshot_seen_apps(&mixer))
+}
+
+pub(crate) fn snapshot_seen_apps(mixer: &crate::mixer::state::MixerState) -> Vec<SeenApp> {
+    mixer
         .seen
         .apps
         .iter()
@@ -113,7 +117,7 @@ pub fn get_seen_apps(state: State<'_, AppState>) -> Result<Vec<SeenApp>, String>
                     .map(str::to_string),
             }
         })
-        .collect())
+        .collect()
 }
 
 /// Hide (or un-hide) an app from the list and from auto-routing.

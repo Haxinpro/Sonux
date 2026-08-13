@@ -329,64 +329,54 @@ impl EqParams {
     }
 
     fn snapshot_if_changed(&self, seen_generation: u64) -> Option<EqSnapshot> {
-        loop {
-            let generation = self.generation.load(Ordering::SeqCst);
-            if generation & 1 != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            if generation == seen_generation {
-                return None;
-            }
-
-            let snapshot = EqSnapshot {
-                generation,
-                enabled: self.enabled.load(Ordering::Relaxed),
-                preamp_db: f32::from_bits(self.preamp_bits.load(Ordering::Relaxed)),
-                bands: std::array::from_fn(|index| self.bands[index].load()),
-                band_count: self.band_count.load(Ordering::Relaxed).min(MAX_EQ_BANDS),
-                tone_bass_db: f32::from_bits(self.tone_bass_bits.load(Ordering::Relaxed)),
-                tone_voice_db: f32::from_bits(self.tone_voice_bits.load(Ordering::Relaxed)),
-                tone_treble_db: f32::from_bits(self.tone_treble_bits.load(Ordering::Relaxed)),
-                boost_db: f32::from_bits(self.boost_bits.load(Ordering::Relaxed)),
-                gate_enabled: self.gate.load(Ordering::Relaxed),
-                gate_threshold_db: f32::from_bits(self.gate_threshold_bits.load(Ordering::Relaxed)),
-                comp_enabled: self.comp.load(Ordering::Relaxed),
-                comp_threshold_db: f32::from_bits(self.comp_threshold_bits.load(Ordering::Relaxed)),
-                comp_ratio: f32::from_bits(self.comp_ratio_bits.load(Ordering::Relaxed)),
-                limiter_enabled: self.limiter.load(Ordering::Relaxed),
-                limiter_ceiling_db: f32::from_bits(
-                    self.limiter_ceiling_bits.load(Ordering::Relaxed),
-                ),
-                headphones: self.playback_mode.load(Ordering::Relaxed) == 1
-                    && !self.spatial.load(Ordering::Relaxed),
-            };
-            // Keep every field load before the closing generation check.
-            fence(Ordering::SeqCst);
-            if self.generation.load(Ordering::SeqCst) == generation {
-                return Some(snapshot);
-            }
+        let generation = self.generation.load(Ordering::SeqCst);
+        // A realtime reader must never wait for the command thread. If a
+        // publication is in progress, keep the previous DSP snapshot for
+        // this quantum and try again on the next one.
+        if generation & 1 != 0 || generation == seen_generation {
+            return None;
         }
+
+        let snapshot = EqSnapshot {
+            generation,
+            enabled: self.enabled.load(Ordering::Relaxed),
+            preamp_db: f32::from_bits(self.preamp_bits.load(Ordering::Relaxed)),
+            bands: std::array::from_fn(|index| self.bands[index].load()),
+            band_count: self.band_count.load(Ordering::Relaxed).min(MAX_EQ_BANDS),
+            tone_bass_db: f32::from_bits(self.tone_bass_bits.load(Ordering::Relaxed)),
+            tone_voice_db: f32::from_bits(self.tone_voice_bits.load(Ordering::Relaxed)),
+            tone_treble_db: f32::from_bits(self.tone_treble_bits.load(Ordering::Relaxed)),
+            boost_db: f32::from_bits(self.boost_bits.load(Ordering::Relaxed)),
+            gate_enabled: self.gate.load(Ordering::Relaxed),
+            gate_threshold_db: f32::from_bits(self.gate_threshold_bits.load(Ordering::Relaxed)),
+            comp_enabled: self.comp.load(Ordering::Relaxed),
+            comp_threshold_db: f32::from_bits(self.comp_threshold_bits.load(Ordering::Relaxed)),
+            comp_ratio: f32::from_bits(self.comp_ratio_bits.load(Ordering::Relaxed)),
+            limiter_enabled: self.limiter.load(Ordering::Relaxed),
+            limiter_ceiling_db: f32::from_bits(self.limiter_ceiling_bits.load(Ordering::Relaxed)),
+            headphones: self.playback_mode.load(Ordering::Relaxed) == 1
+                && !self.spatial.load(Ordering::Relaxed),
+        };
+        // Keep every field load before the closing generation check. A
+        // concurrent update simply defers this refresh; it never retries in
+        // the realtime callback.
+        fence(Ordering::SeqCst);
+        (self.generation.load(Ordering::SeqCst) == generation).then_some(snapshot)
     }
 
-    pub(crate) fn spatial_snapshot(&self) -> (bool, f32, f32, bool) {
-        loop {
-            let generation = self.generation.load(Ordering::SeqCst);
-            if generation & 1 != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let snapshot = (
-                self.spatial.load(Ordering::Relaxed),
-                f32::from_bits(self.spatial_tuning_bits.load(Ordering::Relaxed)),
-                f32::from_bits(self.spatial_distance_bits.load(Ordering::Relaxed)),
-                self.playback_mode.load(Ordering::Relaxed) == 1,
-            );
-            fence(Ordering::SeqCst);
-            if self.generation.load(Ordering::SeqCst) == generation {
-                return snapshot;
-            }
+    pub(crate) fn spatial_snapshot(&self) -> Option<crate::audio::pw_native::SpatialRenderParams> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        if generation & 1 != 0 {
+            return None;
         }
+        let snapshot = crate::audio::pw_native::SpatialRenderParams::new(
+            self.spatial.load(Ordering::Relaxed),
+            f32::from_bits(self.spatial_tuning_bits.load(Ordering::Relaxed)),
+            f32::from_bits(self.spatial_distance_bits.load(Ordering::Relaxed)),
+            self.playback_mode.load(Ordering::Relaxed) == 1,
+        );
+        fence(Ordering::SeqCst);
+        (self.generation.load(Ordering::SeqCst) == generation).then_some(snapshot)
     }
 }
 
@@ -879,10 +869,12 @@ mod tests {
             }
         });
 
+        let mut stable_reads = 0;
         for _ in 0..20_000 {
-            let snapshot = params
-                .snapshot_if_changed(u64::MAX)
-                .expect("the generation cannot equal the refresh sentinel");
+            let Some(snapshot) = params.snapshot_if_changed(u64::MAX) else {
+                continue;
+            };
+            stable_reads += 1;
             let expected = if snapshot.preamp_db == first.preamp_db {
                 &first
             } else {
@@ -908,13 +900,29 @@ mod tests {
                 expected.playback_mode == PlaybackMode::Headphones && !expected.spatial_enabled
             );
 
-            let spatial = params.spatial_snapshot();
-            assert!(
-                spatial == (false, 0.1, 0.2, false) || spatial == (false, 0.8, 0.9, true),
-                "mixed spatial generation: {spatial:?}"
-            );
+            if let Some(spatial) = params.spatial_snapshot() {
+                assert!(!spatial.enabled);
+                assert!(
+                    (spatial.tuning, spatial.distance, spatial.headphones) == (0.1, 0.2, false)
+                        || (spatial.tuning, spatial.distance, spatial.headphones)
+                            == (0.8, 0.9, true),
+                    "mixed spatial generation: {spatial:?}"
+                );
+            }
         }
         writer.join().expect("writer thread succeeds");
+        let final_snapshot = params
+            .snapshot_if_changed(u64::MAX)
+            .expect("a completed publication is readable");
+        assert!(stable_reads > 0 || final_snapshot.generation > 0);
+    }
+
+    #[test]
+    fn realtime_snapshots_defer_in_progress_publications_without_spinning() {
+        let params = EqParams::from_config(&EqConfig::default());
+        params.generation.store(3, Ordering::SeqCst);
+        assert!(params.snapshot_if_changed(u64::MAX).is_none());
+        assert!(params.spatial_snapshot().is_none());
     }
 
     #[test]

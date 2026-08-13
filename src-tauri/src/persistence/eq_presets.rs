@@ -67,7 +67,7 @@ pub fn save(sink_name: &str, preset: &EqPreset) -> Result<(), SinkError> {
 pub fn delete(sink_name: &str, name: &str) -> Result<(), SinkError> {
     let name = sanitize_name(name)?;
     let path = channel_presets_dir(sink_name)?.join(format!("{name}.json"));
-    match fs::remove_file(&path) {
+    match super::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
         Err(e) => Err(SinkError::Io(e)),

@@ -212,12 +212,12 @@ pub fn create_backup(
     let _profile_operation = state.lock_profile_operation()?;
     {
         let mixer = state.lock_mixer()?;
-        crate::commands::profiles::autosave_active(&mixer);
+        crate::commands::profiles::autosave_active_checked(&mixer)
+            .map_err(|error| format!("Could not save the current profile for backup: {error}"))?;
     }
     crate::persistence::backup::create(
         crate::persistence::backup::BackupKind::Manual,
         frontend_state,
-        autostart::is_enabled(),
     )
     .map_err(|error| error.to_string())?;
     crate::persistence::backup::status().map_err(|error| error.to_string())
@@ -291,36 +291,44 @@ pub fn restore_backup(
     let _profile_operation = state.lock_profile_operation()?;
     {
         let mixer = state.lock_mixer()?;
-        crate::commands::profiles::autosave_active(&mixer);
+        crate::commands::profiles::autosave_active_checked(&mixer).map_err(|error| {
+            format!("Could not save the current profile before restore: {error}")
+        })?;
     }
     let recovery = crate::persistence::backup::create(
         crate::persistence::backup::BackupKind::AutomaticRecovery,
         frontend_state,
-        autostart::is_enabled(),
     )
     .map_err(|error| format!("Could not create the automatic recovery backup: {error}"))?;
 
-    crate::persistence::backup::restore(&selected).map_err(|error| error.to_string())?;
     let recovery_backup = recovery
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Sonux Automatic Recovery Backup")
         .to_string();
-    let mut warnings = Vec::new();
-    if let Err(error) = crate::persistence::wireplumber::write(&restored_assignments) {
-        warnings.push(format!(
-            "Could not regenerate the restored WirePlumber routing rules: {error}"
-        ));
-    }
-    let autostart_result = if selected.autostart_enabled {
-        autostart::enable()
-    } else {
-        autostart::disable()
-    };
-    if let Err(error) = autostart_result {
-        warnings.push(format!("Could not restore Start at login: {error}"));
-    }
+    let warnings = crate::persistence::backup::restore_with(&selected, || {
+        let mut warnings = Vec::new();
+        if let Err(error) = crate::persistence::wireplumber::write(&restored_assignments) {
+            warnings.push(format!(
+                "Could not regenerate the restored WirePlumber routing rules: {error}"
+            ));
+        }
+        let autostart_result = if selected.autostart_enabled {
+            autostart::enable()
+        } else {
+            autostart::disable()
+        };
+        if let Err(error) = autostart_result {
+            warnings.push(format!("Could not restore Start at login: {error}"));
+        }
+        warnings
+    })
+    .map_err(|error| error.to_string())?;
 
+    // The live mixer still represents the pre-restore tree. Keep the graph and
+    // every persistence writer stopped until the frontend launches the
+    // replacement process. If that launch fails, restored files remain intact
+    // and the user can retry Restart without stale autosave damage.
     Ok(RestoreBackupResult {
         frontend_state: selected.frontend_state,
         recovery_backup: recovery_backup.clone(),
@@ -519,10 +527,14 @@ pub fn set_onboarded(state: State<'_, AppState>) -> Result<(), String> {
 /// autostart, and relaunch as if freshly installed.
 #[tauri::command]
 pub fn reset_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _profile_operation = state.lock_profile_operation()?;
     // Best-effort teardown - the relaunch recreates everything anyway.
     for err in state.teardown_virtual_sinks() {
         eprintln!("sonux: reset teardown: {err}");
     }
+    let mut config_quiescence = crate::persistence::quiesce_config_writes()
+        .map_err(|error| format!("Could not stop configuration writers for reset: {error}"))?;
+    config_quiescence.commit();
     let _ = autostart::disable();
     crate::persistence::wipe_all().map_err(|e| e.to_string())?;
     restart_app(app)

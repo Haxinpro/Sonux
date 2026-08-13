@@ -73,12 +73,13 @@ impl MeterHandle {
                 let Some(data) = datas.first_mut() else {
                     return;
                 };
-                let valid = data.chunk().size() as usize;
-                let Some(bytes) = data.data() else { return };
+                let Some(bytes) = super::capture_chunk_bytes(data) else {
+                    return;
+                };
                 let mut peaks = [0.0f32; 2];
                 // f32 interleaved. The 7.1 channel groups are folded into
                 // the two UI bars; centre and LFE raise both sides.
-                for (i, raw) in bytes[..valid.min(bytes.len())].chunks_exact(4).enumerate() {
+                for (i, raw) in bytes.chunks_exact(4).enumerate() {
                     let v = f32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]).abs();
                     let ch = i % ctx.channels;
                     if ctx.channels == SURROUND_CHANNELS {

@@ -55,6 +55,52 @@ function cancelPendingInvokes() {
   pendingInvokes.clear();
 }
 
+let profileRefreshVersion = 0;
+let balanceChannelsVersion = 0;
+let balanceVisibilityVersion = 0;
+let balanceChannelsQueue = Promise.resolve();
+let balanceVisibilityQueue = Promise.resolve();
+let pendingBalanceChannels = 0;
+let pendingBalanceVisibility = 0;
+let confirmedBalanceChannels: { balanceA: string | null; balanceB: string | null } | null = null;
+let confirmedBalanceVisibility: boolean | null = null;
+
+interface ProfileSnapshot {
+  activeProfile: string | null;
+  channels: VirtualSink[];
+  appStreams: AppStream[];
+  outputDevices: OutputDevice[];
+  channelOutputs: Record<string, string | null>;
+  resolvedOutputs: Record<string, string | null>;
+  channelFailover: Record<string, boolean>;
+  eqConfigs: Record<string, EqConfig>;
+  micConfig: MicConfig | null;
+  micConfigs: MicConfig[];
+  inputDevices: OutputDevice[];
+  selectedMicNode: string;
+  micClients: MicClient[];
+  seenApps: SeenApp[];
+  profiles: ProfileInfo[];
+  buses: BusDef[];
+}
+
+async function readProfileSnapshot(selectedMicNode: string): Promise<ProfileSnapshot> {
+  const snapshot = await invoke<Omit<ProfileSnapshot, "micConfig" | "selectedMicNode">>(
+    "get_profile_snapshot",
+  );
+  const { micConfigs } = snapshot;
+  const micConfig = micConfigs.find((mic) => mic.node_name === "sink_mic")
+    ?? micConfigs[0]
+    ?? null;
+  return {
+    ...snapshot,
+    micConfig,
+    selectedMicNode: micConfigs.some((mic) => mic.node_name === selectedMicNode)
+      ? selectedMicNode
+      : "sink_mic",
+  };
+}
+
 interface MixerStore {
   channels: VirtualSink[];
   appStreams: AppStream[];
@@ -233,20 +279,44 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   showBalance: true,
 
   setBalanceChannels: async (a, b) => {
+    const version = ++balanceChannelsVersion;
+    if (pendingBalanceChannels === 0) {
+      confirmedBalanceChannels = { balanceA: get().balanceA, balanceB: get().balanceB };
+    }
+    pendingBalanceChannels += 1;
     set({ balanceA: a, balanceB: b });
+    const write = balanceChannelsQueue.then(() => invoke("set_balance_channels", { a, b }));
+    balanceChannelsQueue = write.then(() => undefined, () => undefined);
     try {
-      await invoke("set_balance_channels", { a, b });
+      await write;
+      confirmedBalanceChannels = { balanceA: a, balanceB: b };
     } catch (e) {
-      set({ error: String(e) });
+      if (version === balanceChannelsVersion) {
+        set({ ...confirmedBalanceChannels!, error: String(e) });
+      }
+    } finally {
+      pendingBalanceChannels -= 1;
+      if (pendingBalanceChannels === 0) confirmedBalanceChannels = null;
     }
   },
 
   setBalanceVisible: async (visible) => {
+    const version = ++balanceVisibilityVersion;
+    if (pendingBalanceVisibility === 0) confirmedBalanceVisibility = get().showBalance;
+    pendingBalanceVisibility += 1;
     set({ showBalance: visible });
+    const write = balanceVisibilityQueue.then(() => invoke("set_balance_visible", { visible }));
+    balanceVisibilityQueue = write.then(() => undefined, () => undefined);
     try {
-      await invoke("set_balance_visible", { visible });
+      await write;
+      confirmedBalanceVisibility = visible;
     } catch (e) {
-      set({ error: String(e) });
+      if (version === balanceVisibilityVersion) {
+        set({ showBalance: confirmedBalanceVisibility!, error: String(e) });
+      }
+    } finally {
+      pendingBalanceVisibility -= 1;
+      if (pendingBalanceVisibility === 0) confirmedBalanceVisibility = null;
     }
   },
 
@@ -328,23 +398,27 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   fetchChannels: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const channels = await invoke<VirtualSink[]>("get_virtual_devices");
+      if (refreshVersion !== profileRefreshVersion) return;
       set({ channels });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
   fetchAppStreams: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const appStreams = await invoke<AppStream[]>("get_app_streams");
+      if (refreshVersion !== profileRefreshVersion) return;
       const s = get();
       const patch: Partial<MixerStore> = {};
       if (!jsonEqual(s.appStreams, appStreams)) patch.appStreams = appStreams;
       if (Object.keys(patch).length) set(patch);
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -415,6 +489,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   fetchOutputs: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const [outputDevices, channelOutputs, resolvedOutputs, channelFailover] = await Promise.all([
         invoke<OutputDevice[]>("get_output_devices"),
@@ -422,6 +497,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
         invoke<Record<string, string | null>>("get_resolved_outputs"),
         invoke<Record<string, boolean>>("get_channel_failover"),
       ]);
+      if (refreshVersion !== profileRefreshVersion) return;
       const s = get();
       const patch: Partial<MixerStore> = {};
       if (!jsonEqual(s.outputDevices, outputDevices)) patch.outputDevices = outputDevices;
@@ -430,7 +506,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       if (!jsonEqual(s.channelFailover, channelFailover)) patch.channelFailover = channelFailover;
       if (Object.keys(patch).length) set(patch);
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -475,11 +551,13 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   eqConfigs: {},
 
   fetchEq: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const eqConfigs = await invoke<Record<string, EqConfig>>("get_channel_eq_configs");
+      if (refreshVersion !== profileRefreshVersion) return;
       if (!jsonEqual(get().eqConfigs, eqConfigs)) set({ eqConfigs });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -503,27 +581,31 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   micCreationOpen: false,
 
   fetchMic: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const [micConfigs, inputDevices] = await Promise.all([
         invoke<MicConfig[]>("get_mic_configs"),
         invoke<OutputDevice[]>("get_input_devices"),
       ]);
+      if (refreshVersion !== profileRefreshVersion) return;
       const micConfig = micConfigs.find((mic) => mic.node_name === "sink_mic") ?? micConfigs[0] ?? null;
       const selectedMicNode = micConfigs.some((mic) => mic.node_name === get().selectedMicNode)
         ? get().selectedMicNode
         : "sink_mic";
       set({ micConfig, micConfigs, inputDevices, selectedMicNode });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
   fetchMicClients: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const micClients = await invoke<MicClient[]>("get_mic_clients");
+      if (refreshVersion !== profileRefreshVersion) return;
       if (!jsonEqual(get().micClients, micClients)) set({ micClients });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -621,11 +703,13 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   setMicCreationOpen: (open) => set({ micCreationOpen: open }),
 
   fetchProfiles: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const profiles = await invoke<ProfileInfo[]>("list_profiles");
+      if (refreshVersion !== profileRefreshVersion) return;
       set({ profiles });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -638,22 +722,18 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     }
   },
 
-  onProfileChanged: async (name) => {
+  onProfileChanged: async (_name) => {
     // The backend has already switched (tray/application automation). Never
     // let an edit queued for the previous profile land in the new one.
     cancelPendingInvokes();
-    set({ activeProfile: name });
-    await Promise.all([
-      get().fetchChannels(),
-      get().fetchAppStreams(),
-      get().fetchOutputs(),
-      get().fetchEq(),
-      get().fetchMic(),
-      get().fetchMicClients(),
-      get().fetchSeenApps(),
-      get().fetchProfiles(),
-      get().fetchBuses(),
-    ]);
+    const version = ++profileRefreshVersion;
+    try {
+      const snapshot = await readProfileSnapshot(get().selectedMicNode);
+      if (version !== profileRefreshVersion) return;
+      set(snapshot);
+    } catch (e) {
+      if (version === profileRefreshVersion) set({ error: String(e) });
+    }
   },
 
   createBlankProfile: async (name, micEnabled) => {
@@ -696,11 +776,13 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   fetchSeenApps: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const seenApps = await invoke<SeenApp[]>("get_seen_apps");
+      if (refreshVersion !== profileRefreshVersion) return;
       if (!jsonEqual(get().seenApps, seenApps)) set({ seenApps });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 
@@ -745,23 +827,17 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   loadProfile: async (name) => {
+    ++profileRefreshVersion; // invalidate pre-mutation polls and snapshots
     try {
       // Manual switches preserve the final value of an in-progress drag in
       // the profile being left, then move to the requested profile.
       await flushPendingInvokes();
       await invoke("load_profile", { name });
-      set({ activeProfile: name });
-      // Layout, volumes and routing all changed backend-side.
-      await Promise.all([
-        get().fetchChannels(),
-        get().fetchAppStreams(),
-        get().fetchOutputs(),
-        get().fetchEq(),
-        get().fetchMic(),
-        get().fetchMicClients(),
-        get().fetchSeenApps(),
-        get().fetchBuses(),
-      ]);
+      // Loading succeeded. Invalidate refreshes that began before or during
+      // the switch, then read the final profile snapshot.
+      const version = ++profileRefreshVersion;
+      const snapshot = await readProfileSnapshot(get().selectedMicNode);
+      if (version === profileRefreshVersion) set(snapshot);
       return true;
     } catch (e) {
       set({ error: String(e) });
@@ -799,11 +875,13 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   buses: [],
 
   fetchBuses: async () => {
+    const refreshVersion = profileRefreshVersion;
     try {
       const buses = await invoke<BusDef[]>("list_buses");
+      if (refreshVersion !== profileRefreshVersion) return;
       set({ buses });
     } catch (e) {
-      set({ error: String(e) });
+      if (refreshVersion === profileRefreshVersion) set({ error: String(e) });
     }
   },
 

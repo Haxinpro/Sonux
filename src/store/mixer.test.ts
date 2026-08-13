@@ -85,6 +85,69 @@ describe("setChannelVolume", () => {
 });
 
 describe("profile operations", () => {
+  const snapshot = (profile: string) => ({
+    activeProfile: profile,
+    channels: [channel(`sink_${profile.toLowerCase()}`)],
+    appStreams: [], outputDevices: [], channelOutputs: {}, resolvedOutputs: {},
+    channelFailover: {}, eqConfigs: {}, micConfigs: [], inputDevices: [],
+    micClients: [], seenApps: [],
+    profiles: [{ name: profile, trigger_device: null, protected: false }],
+    buses: [],
+  });
+
+  it("commits only the latest rapid external profile refresh", async () => {
+    let resolveOld!: (value: unknown) => void;
+    invoke
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce(snapshot("New"));
+
+    const oldRefresh = useMixerStore.getState().onProfileChanged("Old");
+    const newRefresh = useMixerStore.getState().onProfileChanged("New");
+    await newRefresh;
+    resolveOld(snapshot("Old"));
+    await oldRefresh;
+
+    expect(useMixerStore.getState().activeProfile).toBe("New");
+    expect(useMixerStore.getState().channels[0].name).toBe("sink_new");
+    expect(useMixerStore.getState().profiles[0].name).toBe("New");
+  });
+
+  it("keeps a backend-final manual load over an event started during its mutation", async () => {
+    let resolvePoll!: (value: unknown) => void;
+    let resolveLoad!: (value: unknown) => void;
+    let resolveEvent!: (value: unknown) => void;
+    let snapshotCalls = 0;
+    invoke.mockImplementation((command: string) => {
+      if (command === "get_virtual_devices") {
+        return new Promise((resolve) => { resolvePoll = resolve; });
+      }
+      if (command === "load_profile") {
+        return new Promise((resolve) => { resolveLoad = resolve; });
+      }
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) {
+        return new Promise((resolve) => { resolveEvent = resolve; });
+      }
+      return Promise.resolve(snapshot("Manual"));
+    });
+
+    const oldPoll = useMixerStore.getState().fetchChannels();
+    const manual = useMixerStore.getState().loadProfile("Manual");
+    for (let index = 0; index < 4 && !resolveLoad; index += 1) {
+      await Promise.resolve();
+    }
+    const event = useMixerStore.getState().onProfileChanged("Event");
+    await Promise.resolve();
+    resolveLoad(undefined);
+    await manual;
+    resolvePoll([channel("sink_poll")]);
+    resolveEvent(snapshot("Event"));
+    await Promise.all([oldPoll, event]);
+
+    expect(useMixerStore.getState().activeProfile).toBe("Manual");
+    expect(useMixerStore.getState().channels[0].name).toBe("sink_manual");
+  });
+
   it("reports a failed load without changing the active profile", async () => {
     useMixerStore.setState({ activeProfile: "Old" });
     invoke.mockRejectedValueOnce("malformed profile New");
@@ -149,6 +212,98 @@ describe("profile operations", () => {
 
     expect(succeeded).toBe(true);
     expect(useMixerStore.getState().error).toContain("could not refresh");
+  });
+});
+
+describe("balance preferences", () => {
+  it("rolls back optimistic channel picks when persistence fails", async () => {
+    useMixerStore.setState({ balanceA: "sink_game", balanceB: "sink_chat" });
+    invoke.mockRejectedValueOnce("write failed");
+
+    await useMixerStore.getState().setBalanceChannels("sink_media", "sink_chat");
+
+    expect(useMixerStore.getState().balanceA).toBe("sink_game");
+    expect(useMixerStore.getState().balanceB).toBe("sink_chat");
+    expect(useMixerStore.getState().error).toContain("write failed");
+  });
+
+  it("rolls back optimistic visibility when persistence fails", async () => {
+    useMixerStore.setState({ showBalance: true });
+    invoke.mockRejectedValueOnce("write failed");
+
+    await useMixerStore.getState().setBalanceVisible(false);
+
+    expect(useMixerStore.getState().showBalance).toBe(true);
+  });
+
+  it("does not let an older identical failure undo a newer success", async () => {
+    let rejectOlder!: (reason: unknown) => void;
+    invoke
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectOlder = reject; }))
+      .mockResolvedValueOnce(undefined);
+    useMixerStore.setState({ showBalance: true });
+
+    const older = useMixerStore.getState().setBalanceVisible(false);
+    const newer = useMixerStore.getState().setBalanceVisible(false);
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    rejectOlder("older write failed");
+    await Promise.all([older, newer]);
+
+    expect(useMixerStore.getState().showBalance).toBe(false);
+    expect(useMixerStore.getState().error).toBeNull();
+  });
+
+  it("serializes an exact visibility reversal in request order", async () => {
+    let resolveFirst!: () => void;
+    invoke
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce(undefined);
+    useMixerStore.setState({ showBalance: true });
+
+    const hide = useMixerStore.getState().setBalanceVisible(false);
+    const show = useMixerStore.getState().setBalanceVisible(true);
+    await Promise.resolve();
+    expect(invoke.mock.calls).toEqual([["set_balance_visible", { visible: false }]]);
+    resolveFirst();
+    await Promise.all([hide, show]);
+
+    expect(invoke.mock.calls).toEqual([
+      ["set_balance_visible", { visible: false }],
+      ["set_balance_visible", { visible: true }],
+    ]);
+    expect(useMixerStore.getState().showBalance).toBe(true);
+  });
+
+  it("reconciles to the last confirmed value when every queued write fails", async () => {
+    invoke.mockRejectedValue("write failed");
+    useMixerStore.setState({ showBalance: true });
+
+    const first = useMixerStore.getState().setBalanceVisible(false);
+    const second = useMixerStore.getState().setBalanceVisible(true);
+    await Promise.all([first, second]);
+
+    expect(useMixerStore.getState().showBalance).toBe(true);
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "set_balance_visible",
+      "set_balance_visible",
+    ]);
+  });
+
+  it("restores confirmed channel picks when both serialized writes fail", async () => {
+    invoke.mockRejectedValue("write failed");
+    useMixerStore.setState({ balanceA: "sink_game", balanceB: "sink_chat" });
+
+    const first = useMixerStore.getState().setBalanceChannels("sink_media", "sink_chat");
+    const second = useMixerStore.getState().setBalanceChannels("sink_game", "sink_media");
+    await Promise.all([first, second]);
+
+    expect(useMixerStore.getState().balanceA).toBe("sink_game");
+    expect(useMixerStore.getState().balanceB).toBe("sink_chat");
+    expect(invoke.mock.calls).toEqual([
+      ["set_balance_channels", { a: "sink_media", b: "sink_chat" }],
+      ["set_balance_channels", { a: "sink_game", b: "sink_media" }],
+    ]);
   });
 });
 

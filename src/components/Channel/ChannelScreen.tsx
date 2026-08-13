@@ -94,6 +94,7 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
             <HSlider
               value={channel.volume_percent}
               max={MAX_VOLUME}
+              ariaLabel={`${channel.label} volume`}
               valueLabel={`${channel.volume_percent}% · ${volToDb(channel.volume_percent)}`}
               onChange={(value) => void setChannelVolume(channel.name, value)}
             />

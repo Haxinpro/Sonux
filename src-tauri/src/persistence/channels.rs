@@ -94,53 +94,59 @@ impl Channels {
             Err(_) => return Self::default(),
         };
         match Self::parse(&raw) {
-            Some(c) if !c.channels.is_empty() => c,
-            Some(_) => {
-                eprintln!("sonux: channels.json held no valid channels; using defaults");
-                Self::default()
-            }
-            None => {
-                eprintln!("sonux: channels.json is unreadable (corrupt?); using defaults");
+            Ok(channels) => channels,
+            Err(error) => {
+                eprintln!("sonux: channels.json is invalid ({error}); using defaults");
                 Self::default()
             }
         }
     }
 
-    /// Parse and sanitize the channel set from JSON. Entries that break the
-    /// invariants `add()` guarantees - a reserved name, a missing `sink_`
-    /// prefix, or a duplicate - are dropped: a hand-edited or foreign-tool
-    /// file would otherwise collide with the mic/stream service nodes, or make
-    /// `is_virtual_sink` reject a channel and abort `init_virtual_devices`.
-    /// The set is capped at `MAX_CHANNELS` so it can't exhaust the level-meter
-    /// slots. Returns `None` only when the text isn't valid JSON, so `load`
-    /// can tell a corrupt file from a merely empty one.
-    fn parse(raw: &str) -> Option<Self> {
-        let parsed: Self = serde_json::from_str(raw).ok()?;
-        let mut seen = std::collections::HashSet::new();
-        let mut channels = Vec::new();
-        for def in parsed.channels {
-            let name = def.name.as_str();
-            let valid = name.starts_with("sink_")
-                && !is_reserved_sink_name(name)
-                && seen.insert(def.name.clone());
-            if valid && channels.len() < MAX_CHANNELS {
-                channels.push(def);
-            } else {
-                eprintln!(
-                    "sonux: dropping invalid channel '{}' from channels.json",
-                    def.name
-                );
-            }
+    /// Parse and validate the complete channel set. Reject the whole file when
+    /// any entry breaks the invariants `add()` guarantees, rather than silently
+    /// adopting a partial layout that no longer matches the other live files.
+    pub(crate) fn parse(raw: &str) -> Result<Self, SinkError> {
+        let mut parsed: Self = serde_json::from_str(raw)
+            .map_err(|error| SinkError::Config(format!("malformed channels: {error}")))?;
+        parsed.normalize_and_validate()?;
+        Ok(parsed)
+    }
+
+    pub(crate) fn normalize_and_validate(&mut self) -> Result<(), SinkError> {
+        if self.channels.is_empty() || self.channels.len() > MAX_CHANNELS {
+            return Err(SinkError::Config(format!(
+                "channel set must contain 1-{MAX_CHANNELS} channels"
+            )));
         }
-        Some(Self { channels })
+        let mut seen = std::collections::HashSet::new();
+        for channel in &mut self.channels {
+            validate_channel_name(&channel.name)?;
+            if !seen.insert(channel.name.clone()) {
+                return Err(SinkError::Config(format!(
+                    "duplicate channel name: {}",
+                    channel.name
+                )));
+            }
+            let label = channel.label.trim();
+            if label.is_empty() || label.len() > 24 {
+                return Err(SinkError::Config(format!(
+                    "channel label must be 1-24 characters: {}",
+                    channel.name
+                )));
+            }
+            channel.label = label.to_string();
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<(), SinkError> {
+        let mut validated = self.clone();
+        validated.normalize_and_validate()?;
         let path = Self::config_path()?;
         if let Some(parent) = path.parent() {
             crate::persistence::ensure_private_dir(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
+        let json = serde_json::to_string_pretty(&validated)
             .map_err(|e| SinkError::Config(format!("serialize channels: {e}")))?;
         super::write_atomic(&path, &json)?;
         Ok(())
@@ -246,6 +252,21 @@ impl Channels {
         }
         Ok(())
     }
+}
+
+pub(crate) fn validate_channel_name(name: &str) -> Result<(), SinkError> {
+    let suffix = name.strip_prefix("sink_");
+    if suffix.is_none_or(|suffix| {
+        suffix.is_empty()
+            || name.len() > 64
+            || !suffix
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    }) || is_reserved_sink_name(name)
+    {
+        return Err(SinkError::Config(format!("invalid channel name: {name}")));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -364,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_drops_reserved_unprefixed_and_duplicate_names() {
+    fn parse_rejects_reserved_unprefixed_and_duplicate_names() {
         let raw = r#"{"channels":[
             {"name":"sink_game","label":"Game"},
             {"name":"sink_game","label":"Dup"},
@@ -372,42 +393,36 @@ mod tests {
             {"name":"nope","label":"NoPrefix"},
             {"name":"sink_ok","label":"Fine"}
         ]}"#;
-        let names: Vec<String> = Channels::parse(raw)
-            .expect("valid json")
-            .channels
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
-        assert_eq!(names, ["sink_game", "sink_ok"]);
+        assert!(Channels::parse(raw).is_err());
     }
 
     #[test]
-    fn parse_caps_at_max_channels() {
+    fn parse_rejects_too_many_channels() {
         let mut items = Vec::new();
         for i in 0..(MAX_CHANNELS + 5) {
             items.push(format!(r#"{{"name":"sink_c{i}","label":"C{i}"}}"#));
         }
         let raw = format!(r#"{{"channels":[{}]}}"#, items.join(","));
-        assert_eq!(
-            Channels::parse(&raw).expect("valid json").channels.len(),
-            MAX_CHANNELS
-        );
+        assert!(Channels::parse(&raw).is_err());
     }
 
     #[test]
     fn parse_rejects_corrupt_or_empty_text() {
-        assert!(Channels::parse("{ truncated").is_none());
-        assert!(Channels::parse("").is_none());
+        assert!(Channels::parse("{ truncated").is_err());
+        assert!(Channels::parse("").is_err());
     }
 
     #[test]
-    fn parse_all_invalid_yields_empty_set() {
-        // load() turns this into defaults; parse itself reports the empty set
-        // so load can distinguish it from a corrupt (None) file.
+    fn parse_rejects_all_invalid_set() {
         let raw = r#"{"channels":[{"name":"sink_mic","label":"x"},{"name":"bad","label":"y"}]}"#;
-        assert!(Channels::parse(raw)
-            .expect("valid json")
-            .channels
-            .is_empty());
+        assert!(Channels::parse(raw).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_unsafe_names_and_labels() {
+        let bad_name = r#"{"channels":[{"name":"sink_bad.name","label":"Fine"}]}"#;
+        let bad_label = r#"{"channels":[{"name":"sink_ok","label":"   "}]}"#;
+        assert!(Channels::parse(bad_name).is_err());
+        assert!(Channels::parse(bad_label).is_err());
     }
 }

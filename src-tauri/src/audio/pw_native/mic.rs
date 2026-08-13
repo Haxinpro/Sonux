@@ -244,6 +244,7 @@ pub struct MicStreams {
     _playback_listener: pw::stream::StreamListener<PlaybackCtx>,
     pub params: Arc<MicParams>,
     pub test: Arc<MicTestBuffer>,
+    capture_target: String,
 }
 
 impl MicStreams {
@@ -252,6 +253,10 @@ impl MicStreams {
     /// target.object for playback→virtual-source routing).
     pub fn playback_node_id(&self) -> u32 {
         self.playback.node_id()
+    }
+
+    pub fn capture_target(&self) -> &str {
+        &self.capture_target
     }
 }
 
@@ -308,15 +313,15 @@ fn mono_f32_format() -> Result<Vec<u8>, SinkError> {
 }
 
 impl MicStreams {
-    /// Build both streams. `mic_target` is the node.name of the hardware
-    /// mic to capture (None = system default source). Targets are set via
-    /// the `target.object` property - the connect-id parameter is
-    /// deprecated and WirePlumber 0.5 ignores it.
+    /// Build both streams. `mic_target` is the already validated node.name
+    /// of a hardware microphone. The chain is never started without an
+    /// explicit target: an unpinned AUTOCONNECT capture could select Sonux's
+    /// own virtual microphone when it is the system default.
     pub fn new(
         core: &pw::core::CoreRc,
         config: &MicConfig,
         node_name: &str,
-        mic_target: Option<&str>,
+        mic_target: &str,
         levels: Arc<LevelStore>,
     ) -> Result<Self, SinkError> {
         let err = |stage: &str, e: pw::Error| SinkError::Config(format!("mic {stage}: {e}"));
@@ -346,9 +351,7 @@ impl MicStreams {
             // rebuilding with a resolved hardware target instead.
             "node.dont-reconnect" => "true",
         };
-        if let Some(target) = mic_target {
-            capture_props.insert("target.object", target);
-        }
+        capture_props.insert("target.object", mic_target);
         let capture = pw::stream::StreamRc::new(core.clone(), &capture_name, capture_props)
             .map_err(|e| err("capture stream", e))?;
 
@@ -383,10 +386,11 @@ impl MicStreams {
                 let Some(data) = datas.first_mut() else {
                     return;
                 };
-                let valid = data.chunk().size() as usize;
-                let Some(bytes) = data.data() else { return };
+                let Some(bytes) = super::capture_chunk_bytes(data) else {
+                    return;
+                };
 
-                let samples = valid.min(bytes.len()) / 4;
+                let samples = bytes.len() / 4;
                 let settings = ctx.params.settings();
                 let mut peak = 0.0f32;
                 for chunk in bytes[..samples * 4].chunks(CAPTURE_CHUNK_SAMPLES * 4) {
@@ -403,7 +407,7 @@ impl MicStreams {
                         .scratch
                         .iter()
                         .fold(peak, |maximum, sample| maximum.max(sample.abs()));
-                    ctx.ring.push(&ctx.scratch);
+                    let _ = ctx.ring.push(&ctx.scratch);
                 }
 
                 // Post-DSP level for the UI (mono → both meter channels).
@@ -513,6 +517,7 @@ impl MicStreams {
             _playback_listener: playback_listener,
             params,
             test,
+            capture_target: mic_target.to_string(),
         })
     }
 }

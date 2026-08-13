@@ -171,6 +171,7 @@ pub fn run() {
             commands::eq::import_eq_config,
             commands::eq::import_eq_file,
             commands::profiles::list_profiles,
+            commands::profiles::get_profile_snapshot,
             commands::profiles::get_profile_content,
             commands::profiles::load_profile,
             commands::profiles::delete_profile,

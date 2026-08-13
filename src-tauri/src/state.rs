@@ -19,18 +19,45 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[cfg(test)]
+    pub(crate) fn for_test(backend: Arc<dyn AudioBackend>) -> Self {
+        Self {
+            backend,
+            backend_native: false,
+            mixer: Mutex::new(MixerState::default()),
+            profile_operations: Mutex::new(()),
+            backup_restore_grant: Mutex::new(None),
+        }
+    }
+
     /// Lock the mixer state, mapping poisoning to a command-friendly error.
     /// All command handlers go through this instead of hand-rolled map_errs.
     pub fn lock_mixer(&self) -> Result<std::sync::MutexGuard<'_, MixerState>, String> {
-        self.mixer
+        if crate::persistence::config_writes_quiesced() {
+            return Err("configuration is quiesced while Sonux restarts".into());
+        }
+        let guard = self
+            .mixer
             .lock()
-            .map_err(|_| "mixer state lock poisoned".to_string())
+            .map_err(|_| "mixer state lock poisoned".to_string())?;
+        if crate::persistence::config_writes_quiesced() {
+            return Err("configuration is quiesced while Sonux restarts".into());
+        }
+        Ok(guard)
     }
 
     pub fn lock_profile_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-        self.profile_operations
+        if crate::persistence::config_writes_quiesced() {
+            return Err("configuration is quiesced while Sonux restarts".into());
+        }
+        let guard = self
+            .profile_operations
             .lock()
-            .map_err(|_| "profile operation lock poisoned".to_string())
+            .map_err(|_| "profile operation lock poisoned".to_string())?;
+        if crate::persistence::config_writes_quiesced() {
+            return Err("configuration is quiesced while Sonux restarts".into());
+        }
+        Ok(guard)
     }
 
     pub fn set_backup_restore_grant(&self, path: std::path::PathBuf) -> Result<(), String> {

@@ -34,7 +34,7 @@ pub fn save(name: Option<&str>) -> Result<(), SinkError> {
         }
         None => {
             if path.exists() {
-                fs::remove_file(&path)?;
+                super::remove_file(&path)?;
             }
         }
     }

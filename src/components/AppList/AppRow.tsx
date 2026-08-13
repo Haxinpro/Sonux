@@ -93,6 +93,7 @@ export function AppRow({ stream }: Readonly<AppRowProps>) {
         <HSlider
           value={stream.volume_percent}
           max={100}
+          ariaLabel={`${displayName} volume`}
           onChange={(v) => void setAppVolume(stream.index, v)}
         />
         <ChannelSelect

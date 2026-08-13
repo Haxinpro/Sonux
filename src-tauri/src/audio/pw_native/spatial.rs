@@ -506,6 +506,7 @@ pub struct SpatialEngine {
     /// baseline deliberately does not truncate or blend these filters.
     full: [[Vec<Complex>; EARS]; SURROUND_CHANNELS],
     hrtf_available: bool,
+    hrtf_active: bool,
     history: [[f32; MAX_TAPS - 1]; SURROUND_CHANNELS],
     pending: [[f32; SURROUND_CHANNELS]; BLOCK],
     pending_len: usize,
@@ -550,6 +551,7 @@ impl SpatialEngine {
             plans,
             full: std::array::from_fn(|_| std::array::from_fn(|_| vec![Complex::default(); BINS])),
             hrtf_available: false,
+            hrtf_active: false,
             history: [[0.0; MAX_TAPS - 1]; SURROUND_CHANNELS],
             pending: [[0.0; SURROUND_CHANNELS]; BLOCK],
             pending_len: 0,
@@ -730,10 +732,17 @@ impl SpatialEngine {
 
     fn render_block(&mut self, output: &mut Vec<f32>, params: SpatialRenderParams) {
         if !params.enabled || !params.headphones || !self.hrtf_available {
+            if self.hrtf_active {
+                for channel in &mut self.history {
+                    channel.fill(0.0);
+                }
+                self.hrtf_active = false;
+            }
             self.acoustic.deactivate();
             self.render_downmix(output);
             return;
         }
+        self.hrtf_active = true;
 
         for ear in &mut self.accum {
             ear.fill(Complex::default());
@@ -902,5 +911,25 @@ mod tests {
         for (actual, expected) in stereo.iter().flatten().zip(expected.iter().flatten()) {
             assert!((*actual - *expected).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn disabling_hrtf_clears_convolution_history_before_reenable() {
+        let mut engine = SpatialEngine::new(48_000.0).expect("spatial engine");
+        engine.hrtf_active = true;
+        engine.history[0].fill(0.75);
+        engine.acoustic.active = true;
+        let input = vec![0.0; BLOCK * SURROUND_CHANNELS];
+        let mut output = Vec::with_capacity(BLOCK * EARS);
+
+        engine.process(
+            &input,
+            &mut output,
+            SpatialRenderParams::new(false, 0.5, 0.5, true),
+        );
+
+        assert!(!engine.hrtf_active);
+        assert!(!engine.acoustic.active);
+        assert!(engine.history.iter().flatten().all(|sample| *sample == 0.0));
     }
 }

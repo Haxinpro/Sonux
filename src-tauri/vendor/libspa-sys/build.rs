@@ -82,6 +82,10 @@ fn main() {
     cc.files(cc_files);
     cc.include(env!("CARGO_MANIFEST_DIR"));
     cc.includes(libs.all_include_paths());
+    // PipeWire's public compare.h currently leaves an inline helper parameter
+    // unused. Suppress that warning for this vendored C compilation; Rust
+    // warnings and other crates remain unchanged.
+    cc.flag_if_supported("-Wno-unused-parameter");
 
     #[cfg(feature = "v0_3_65")]
     cc.define("FEATURE_0_3_65", "1");

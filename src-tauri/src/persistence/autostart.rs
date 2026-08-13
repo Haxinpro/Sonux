@@ -10,6 +10,8 @@ use std::process::Command;
 
 use crate::error::SinkError;
 
+static AUTOSTART_OPERATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const UNIT_NAME: &str = "sonux.service";
 const LEGACY_UNIT_NAME: &str = "sink.service";
 
@@ -94,13 +96,17 @@ pub fn migrate_legacy_unit() -> Result<(), SinkError> {
     }
     let _ = systemctl(&["disable", LEGACY_UNIT_NAME]);
     if legacy_path.exists() {
-        fs::remove_file(legacy_path)?;
+        super::remove_file(&legacy_path)?;
     }
     let _ = systemctl(&["daemon-reload"]);
     Ok(())
 }
 
 pub fn enable() -> Result<(), SinkError> {
+    let _config_write = super::begin_config_write()?;
+    let _operation = AUTOSTART_OPERATION
+        .lock()
+        .map_err(|_| SinkError::Config("autostart operation lock poisoned".into()))?;
     let path = unit_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -121,6 +127,10 @@ pub fn enable() -> Result<(), SinkError> {
 }
 
 pub fn disable() -> Result<(), SinkError> {
+    let _config_write = super::begin_config_write()?;
+    let _operation = AUTOSTART_OPERATION
+        .lock()
+        .map_err(|_| SinkError::Config("autostart operation lock poisoned".into()))?;
     let out = systemctl(&["disable", UNIT_NAME])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -134,12 +144,12 @@ pub fn disable() -> Result<(), SinkError> {
     }
     let path = unit_path()?;
     if path.exists() {
-        fs::remove_file(&path)?;
+        super::remove_file(&path)?;
     }
     let _ = systemctl(&["disable", LEGACY_UNIT_NAME]);
     let legacy_path = named_unit_path(LEGACY_UNIT_NAME)?;
     if legacy_path.exists() {
-        fs::remove_file(legacy_path)?;
+        super::remove_file(&legacy_path)?;
     }
     let _ = systemctl(&["daemon-reload"]);
     Ok(())

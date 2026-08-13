@@ -29,18 +29,22 @@ impl Ring {
         self.buf.len() - 1
     }
 
-    /// Push samples. The producer owns only `write`; on overflow the consumer
-    /// notices that it has fallen behind and skips to the freshest window.
-    /// Keeping a single writer per cursor prevents a stale producer update
-    /// from moving `read` backward after the consumer has advanced it.
-    pub fn push(&self, samples: &[f32]) {
+    /// Push as many samples as fit and return the count accepted. New samples
+    /// are dropped on overflow rather than overwriting unread slots: writing
+    /// over a slot before publishing the new cursor lets a concurrent reader
+    /// observe a torn mixture of old and future audio.
+    pub fn push(&self, samples: &[f32]) -> usize {
         let mask = self.mask();
         let mut w = self.write.load(Ordering::Relaxed);
-        for &s in samples {
+        let r = self.read.load(Ordering::Acquire);
+        let used = w.wrapping_sub(r).min(self.buf.len());
+        let accepted = samples.len().min(self.buf.len() - used);
+        for &s in &samples[..accepted] {
             self.buf[w & mask].store(s.to_bits(), Ordering::Relaxed);
             w = w.wrapping_add(1);
         }
         self.write.store(w, Ordering::Release);
+        accepted
     }
 
     /// Pop up to `out.len()` samples; unfilled tail is zeroed (underrun).
@@ -49,12 +53,6 @@ impl Ring {
         let mask = self.mask();
         let w = self.write.load(Ordering::Acquire);
         let mut r = self.read.load(Ordering::Relaxed);
-        // The producer may overwrite old samples, but never touches this
-        // cursor. Catch up before reading so only its freshest full window is
-        // visible after an overrun.
-        if w.wrapping_sub(r) > self.buf.len() {
-            r = w.wrapping_sub(self.buf.len());
-        }
         let avail = w.wrapping_sub(r).min(out.len());
         for slot in out.iter_mut().take(avail) {
             *slot = f32::from_bits(self.buf[r & mask].load(Ordering::Relaxed));
@@ -75,7 +73,7 @@ mod tests {
     #[test]
     fn roundtrip_and_underrun() {
         let ring = Ring::new(8);
-        ring.push(&[1.0, 2.0, 3.0]);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0]), 3);
         let mut out = [0.0f32; 5];
         let n = ring.pop(&mut out);
         assert_eq!(n, 3);
@@ -84,28 +82,37 @@ mod tests {
     }
 
     #[test]
-    fn overflow_keeps_freshest_window(// producer overruns consumer
-    ) {
+    fn overflow_drops_new_samples_without_overwriting_unread_audio() {
         let ring = Ring::new(4); // effective window of 4
         let data: Vec<f32> = (0..10).map(|i| i as f32).collect();
-        ring.push(&data);
+        assert_eq!(ring.push(&data), 4);
         let mut out = [0.0f32; 4];
         let n = ring.pop(&mut out);
         assert_eq!(n, 4);
-        assert_eq!(out, [6.0, 7.0, 8.0, 9.0]); // freshest 4 survive
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0]);
     }
 
     #[test]
-    fn producer_never_writes_the_consumer_cursor() {
+    fn full_ring_does_not_touch_unread_slots() {
         let ring = Ring::new(4);
-        ring.write.store(8, Ordering::Relaxed);
-        ring.read.store(5, Ordering::Relaxed);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0]), 4);
 
-        ring.push(&[8.0, 9.0, 10.0, 11.0]);
+        assert_eq!(ring.push(&[8.0, 9.0, 10.0, 11.0]), 0);
 
-        assert_eq!(ring.read.load(Ordering::Relaxed), 5);
         let mut out = [0.0; 4];
         assert_eq!(ring.pop(&mut out), 4);
-        assert_eq!(out, [8.0, 9.0, 10.0, 11.0]);
+        assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn producer_reuses_only_slots_published_by_the_consumer() {
+        let ring = Ring::new(4);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0]), 4);
+        let mut first = [0.0; 2];
+        assert_eq!(ring.pop(&mut first), 2);
+        assert_eq!(ring.push(&[5.0, 6.0, 7.0]), 2);
+        let mut rest = [0.0; 4];
+        assert_eq!(ring.pop(&mut rest), 4);
+        assert_eq!(rest, [3.0, 4.0, 5.0, 6.0]);
     }
 }

@@ -1,5 +1,7 @@
 use tauri::State;
 
+use crate::audio::types::{AppStream, EqConfig, MicClient, MicConfig, OutputDevice, VirtualSink};
+use crate::persistence::buses::BusDef;
 use crate::persistence::channels::ChannelDef;
 use crate::persistence::profiles::{self, Profile, ProfileInfo};
 use crate::persistence::wireplumber;
@@ -278,6 +280,12 @@ pub fn autosave_active(mixer: &crate::mixer::state::MixerState) {
     }
 }
 
+pub(crate) fn autosave_active_checked(
+    mixer: &crate::mixer::state::MixerState,
+) -> Result<(), crate::error::SinkError> {
+    save_active_with_buses(mixer, &mixer.buses)
+}
+
 /// Persist a staged bus definition into the active profile without first
 /// mutating the live mixer. Bus transactions use this so a profile write can
 /// participate in their rollback instead of being a best-effort side effect.
@@ -389,6 +397,105 @@ fn profile_for_autosave(mixer: &crate::mixer::state::MixerState) -> Option<Profi
 #[tauri::command]
 pub fn list_profiles() -> Result<Vec<ProfileInfo>, String> {
     profiles::list().map_err(|e| e.to_string())
+}
+
+/// One coherent frontend refresh payload. Holding `profile_operations` across
+/// every backend read and the final mixer clone prevents a profile mutation
+/// from splitting this snapshot across two configurations.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendProfileSnapshot {
+    active_profile: Option<String>,
+    channels: Vec<VirtualSink>,
+    app_streams: Vec<AppStream>,
+    output_devices: Vec<OutputDevice>,
+    channel_outputs: std::collections::HashMap<String, Option<String>>,
+    resolved_outputs: std::collections::HashMap<String, Option<String>>,
+    channel_failover: std::collections::HashMap<String, bool>,
+    eq_configs: std::collections::HashMap<String, EqConfig>,
+    mic_configs: Vec<MicConfig>,
+    input_devices: Vec<OutputDevice>,
+    mic_clients: Vec<MicClient>,
+    seen_apps: Vec<crate::commands::apps::SeenApp>,
+    profiles: Vec<ProfileInfo>,
+    buses: Vec<BusDef>,
+}
+
+#[tauri::command]
+pub fn get_profile_snapshot(state: State<'_, AppState>) -> Result<FrontendProfileSnapshot, String> {
+    profile_snapshot(state.inner())
+}
+
+fn profile_snapshot(state: &AppState) -> Result<FrontendProfileSnapshot, String> {
+    let _profile_operation = state.lock_profile_operation()?;
+    let names = state
+        .lock_mixer()?
+        .channels
+        .iter()
+        .map(|channel| channel.name.clone())
+        .collect::<Vec<_>>();
+    let controls = state
+        .backend
+        .list_sink_control_states(&names)
+        .map_err(|error| error.to_string())?;
+    {
+        let mut mixer = state.lock_mixer()?;
+        if mixer.sync_controls(&controls) {
+            autosave_active(&mixer);
+        }
+    }
+    let app_streams = crate::commands::devices::poll_app_streams_locked(state)?;
+    let output_devices = state
+        .backend
+        .list_output_devices()
+        .map_err(|error| error.to_string())?;
+    let resolved_outputs = state
+        .backend
+        .resolved_channel_outputs()
+        .map_err(|error| error.to_string())?;
+    let input_devices = state
+        .backend
+        .list_input_devices()
+        .map_err(|error| error.to_string())?;
+    let mic_clients = crate::commands::mic::snapshot_mic_clients(state)?;
+    let profiles = profiles::list().map_err(|error| error.to_string())?;
+
+    let mixer = state.lock_mixer()?;
+    let channel_outputs = mixer
+        .channel_defs
+        .channels
+        .iter()
+        .map(|channel| {
+            (
+                channel.name.clone(),
+                mixer.outputs.get(&channel.name).map(str::to_string),
+            )
+        })
+        .collect();
+    let channel_failover = mixer
+        .channel_defs
+        .channels
+        .iter()
+        .map(|channel| (channel.name.clone(), mixer.outputs.failover(&channel.name)))
+        .collect();
+    let mut mic_configs = vec![mixer.mic.clone()];
+    mic_configs.extend(mixer.secondary_mics.clone());
+    Ok(FrontendProfileSnapshot {
+        active_profile: mixer.active_profile.clone(),
+        channels: mixer.channels.clone(),
+        app_streams,
+        output_devices,
+        channel_outputs,
+        resolved_outputs,
+        channel_failover,
+        eq_configs: mixer.eq.configs.clone(),
+        mic_configs,
+        input_devices,
+        mic_clients,
+        seen_apps: crate::commands::apps::snapshot_seen_apps(&mixer),
+        profiles,
+        buses: mixer.buses.buses.clone(),
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1035,5 +1142,15 @@ mod tests {
         assert_eq!(profile.name, "Default");
         assert_eq!(profile.trigger_device.as_deref(), Some("alsa_output.deck"));
         assert!(profile.protected);
+    }
+
+    #[test]
+    fn checked_autosave_reports_invalid_live_state() {
+        let mixer = crate::mixer::state::MixerState {
+            active_profile: Some("Default".into()),
+            channels: Vec::new(),
+            ..Default::default()
+        };
+        assert!(autosave_active_checked(&mixer).is_err());
     }
 }

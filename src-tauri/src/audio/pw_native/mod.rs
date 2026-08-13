@@ -36,6 +36,22 @@ use thread::Cmd;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Return the valid byte window described by a SPA chunk. `Data::data()`
+/// exposes the complete mapped allocation; capture clients must apply the
+/// chunk offset themselves.
+fn capture_chunk_bytes(data: &mut pw::spa::buffer::Data) -> Option<&mut [u8]> {
+    let offset = data.chunk().offset() as usize;
+    let size = data.chunk().size() as usize;
+    let bytes = data.data()?;
+    let range = capture_chunk_range(bytes.len(), offset, size)?;
+    bytes.get_mut(range)
+}
+
+fn capture_chunk_range(len: usize, offset: usize, size: usize) -> Option<std::ops::Range<usize>> {
+    let end = offset.checked_add(size)?;
+    (end <= len).then_some(offset..end)
+}
+
 pub struct PipeWireBackend {
     sender: Mutex<pw::channel::Sender<Cmd>>,
     /// Live per-sink peak levels, fed by the meter capture streams.
@@ -346,5 +362,17 @@ impl AudioBackend for PipeWireBackend {
             name,
             reply,
         })
+    }
+}
+
+#[cfg(test)]
+mod capture_chunk_tests {
+    use super::capture_chunk_range;
+
+    #[test]
+    fn capture_windows_honor_offsets_and_reject_invalid_bounds() {
+        assert_eq!(capture_chunk_range(32, 8, 12), Some(8..20));
+        assert_eq!(capture_chunk_range(32, 30, 4), None);
+        assert_eq!(capture_chunk_range(32, usize::MAX, 2), None);
     }
 }

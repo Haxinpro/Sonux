@@ -81,6 +81,9 @@ fn collect_files_from(
 ) -> Result<(), SinkError> {
     for entry in fs::read_dir(current)? {
         let entry = entry?;
+        if is_atomic_temp_name(&entry.file_name()) {
+            continue;
+        }
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_files_from(root, &entry.path(), files)?;
@@ -99,6 +102,27 @@ fn collect_files_from(
         }
     }
     Ok(())
+}
+
+fn is_atomic_temp_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some((_, suffix)) = name.rsplit_once('.') else {
+        return false;
+    };
+    if suffix != "tmp" {
+        return false;
+    }
+    let mut parts = name.rsplitn(4, '.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("tmp"), Some(sequence), Some(pid), Some(_))
+            if !sequence.is_empty()
+                && sequence.chars().all(|character| character.is_ascii_digit())
+                && !pid.is_empty()
+                && pid.chars().all(|character| character.is_ascii_digit())
+    )
 }
 
 fn filename(kind: BackupKind, created_at: u64) -> String {
@@ -127,6 +151,7 @@ fn unique_backup_path(dir: &Path, kind: BackupKind, created_at: u64) -> PathBuf 
     unreachable!("the unbounded backup-name search always finds a free path")
 }
 
+#[cfg(test)]
 fn write_backup_to(
     config_root: &Path,
     backup_dir: &Path,
@@ -135,7 +160,28 @@ fn write_backup_to(
     autostart_enabled: bool,
 ) -> Result<PathBuf, SinkError> {
     let created_at = super::unix_now();
-    let config_files = collect_files(config_root)?;
+    let config_files = {
+        let _snapshot = super::lock_config_snapshot()?;
+        collect_files(config_root)?
+    };
+    write_backup_payload(
+        backup_dir,
+        kind,
+        created_at,
+        config_files,
+        frontend_state,
+        autostart_enabled,
+    )
+}
+
+fn write_backup_payload(
+    backup_dir: &Path,
+    kind: BackupKind,
+    created_at: u64,
+    config_files: BTreeMap<String, String>,
+    frontend_state: BTreeMap<String, String>,
+    autostart_enabled: bool,
+) -> Result<PathBuf, SinkError> {
     validate_managed_payload(&config_files, &frontend_state)?;
     let backup = BackupFile {
         schema: BACKUP_SCHEMA,
@@ -162,12 +208,19 @@ fn write_backup_to(
 pub fn create(
     kind: BackupKind,
     frontend_state: BTreeMap<String, String>,
-    autostart_enabled: bool,
 ) -> Result<PathBuf, SinkError> {
-    write_backup_to(
-        &config_root()?,
+    let (config_files, autostart_enabled) = {
+        let _snapshot = super::lock_config_snapshot()?;
+        (
+            collect_files(&config_root()?)?,
+            crate::persistence::autostart::is_enabled(),
+        )
+    };
+    write_backup_payload(
         &backups_dir()?,
         kind,
+        super::unix_now(),
+        config_files,
         frontend_state,
         autostart_enabled,
     )
@@ -200,8 +253,7 @@ fn validate_channel_names<'a>(
 ) -> Result<HashSet<String>, SinkError> {
     let mut seen = HashSet::new();
     for name in names {
-        if !name.starts_with("sink_")
-            || crate::persistence::channels::is_reserved_sink_name(name)
+        if crate::persistence::channels::validate_channel_name(name).is_err()
             || !seen.insert(name.to_string())
         {
             return Err(SinkError::Config(format!(
@@ -242,6 +294,7 @@ fn validate_profiles(files: &BTreeMap<String, String>) -> Result<Vec<String>, Si
             continue;
         };
         let mut profile: crate::persistence::profiles::Profile = parse_json(relative, contents)?;
+        crate::persistence::profiles::migrate_legacy_mic_nodes(&mut profile);
         let safe_name = crate::persistence::profiles::sanitize_name(stem)?;
         if safe_name != stem || profile.name != stem {
             return Err(SinkError::Config(format!(
@@ -353,8 +406,10 @@ fn validate_managed_payload(
                 let _: crate::persistence::buses::Buses = parse_json(relative, contents)?;
             }
             "channels.json" => {
-                let channels: crate::persistence::channels::Channels =
-                    parse_json(relative, contents)?;
+                let channels =
+                    crate::persistence::channels::Channels::parse(contents).map_err(|error| {
+                        SinkError::Config(format!("backup contains invalid channels: {error}"))
+                    })?;
                 validate_channel_names(
                     relative,
                     channels
@@ -367,7 +422,9 @@ fn validate_managed_payload(
                 let _: crate::persistence::eq::ChannelEq = parse_json(relative, contents)?;
             }
             "mic.json" => {
-                let _: crate::audio::types::MicConfig = parse_json(relative, contents)?;
+                crate::persistence::mic::parse(contents).map_err(|error| {
+                    SinkError::Config(format!("backup contains an invalid microphone: {error}"))
+                })?;
             }
             "outputs.json" => {
                 let _: crate::persistence::outputs::ChannelOutputs =
@@ -434,6 +491,14 @@ pub fn read(path: &Path) -> Result<BackupFile, SinkError> {
     }
     for relative in backup.config_files.keys() {
         validate_relative_path(relative)?;
+        if Path::new(relative)
+            .file_name()
+            .is_some_and(is_atomic_temp_name)
+        {
+            return Err(SinkError::Config(
+                "backup contains an internal atomic-write temporary file".into(),
+            ));
+        }
     }
     validate_managed_payload(&backup.config_files, &backup.frontend_state)?;
     Ok(backup)
@@ -449,7 +514,12 @@ impl BackupFile {
     }
 }
 
-fn restore_files_to(root: &Path, files: &BTreeMap<String, String>) -> Result<(), SinkError> {
+fn restore_files_to<T>(
+    root: &Path,
+    files: &BTreeMap<String, String>,
+    quiesce: bool,
+    after_swap: impl FnOnce() -> T,
+) -> Result<T, SinkError> {
     let parent = root
         .parent()
         .ok_or_else(|| SinkError::Config("invalid configuration directory".into()))?;
@@ -475,6 +545,10 @@ fn restore_files_to(root: &Path, files: &BTreeMap<String, String>) -> Result<(),
         return Err(error);
     }
 
+    // Staging does not touch the live tree. Only now stop every persistence
+    // writer and wait for in-flight writes before the directory swap.
+    let mut quiesce_guard = quiesce.then(super::quiesce_config_writes).transpose()?;
+
     if root.exists() {
         if let Err(error) = fs::rename(root, &previous) {
             let _ = fs::remove_dir_all(&staging);
@@ -482,20 +556,34 @@ fn restore_files_to(root: &Path, files: &BTreeMap<String, String>) -> Result<(),
         }
     }
     if let Err(error) = fs::rename(&staging, root) {
-        if previous.exists() {
-            let _ = fs::rename(&previous, root);
+        let rollback = if previous.exists() {
+            fs::rename(&previous, root)
+        } else {
+            Ok(())
+        };
+        if rollback.is_err() {
+            if let Some(guard) = &mut quiesce_guard {
+                guard.commit();
+            }
         }
         let _ = fs::remove_dir_all(&staging);
         return Err(error.into());
     }
+    if let Some(guard) = &mut quiesce_guard {
+        guard.commit();
+    }
+    let result = after_swap();
     if previous.exists() {
         let _ = fs::remove_dir_all(previous);
     }
-    Ok(())
+    Ok(result)
 }
 
-pub fn restore(backup: &BackupFile) -> Result<(), SinkError> {
-    restore_files_to(&config_root()?, &backup.config_files)
+pub fn restore_with<T>(
+    backup: &BackupFile,
+    after_swap: impl FnOnce() -> T,
+) -> Result<T, SinkError> {
+    restore_files_to(&config_root()?, &backup.config_files, true, after_swap)
 }
 
 fn status_from(dir: &Path) -> Result<BackupStatus, SinkError> {
@@ -629,7 +717,7 @@ mod tests {
             ("profiles/Main.json".into(), "profile".into()),
         ]);
 
-        restore_files_to(&config, &files).unwrap();
+        restore_files_to(&config, &files, false, || ()).unwrap();
 
         assert!(!config.join("old.json").exists());
         assert_eq!(
@@ -647,6 +735,21 @@ mod tests {
     fn restore_rejects_parent_directory_paths() {
         assert!(validate_relative_path("../outside.json").is_err());
         assert!(validate_relative_path("profiles/Main.json").is_ok());
+    }
+
+    #[test]
+    fn collection_skips_only_atomic_write_temporary_files() {
+        let root = test_dir("temp-filter");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("prefs.json"), "kept").unwrap();
+        fs::write(root.join("prefs.json.123.7.tmp"), "partial").unwrap();
+        fs::write(root.join("user.tmp"), "kept too").unwrap();
+
+        let files = collect_files(&root).unwrap();
+        assert_eq!(files.get("prefs.json").map(String::as_str), Some("kept"));
+        assert_eq!(files.get("user.tmp").map(String::as_str), Some("kept too"));
+        assert!(!files.contains_key("prefs.json.123.7.tmp"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -708,6 +811,46 @@ mod tests {
         let error = validate_managed_payload(&files, &BTreeMap::new())
             .expect_err("foreign microphone nodes must be rejected");
         assert!(error.to_string().contains("invalid profile"));
+    }
+
+    #[test]
+    fn validation_migrates_legacy_secondary_microphone_nodes() {
+        let mut profile: crate::persistence::profiles::Profile =
+            serde_json::from_str(&valid_profile_json("Main")).unwrap();
+        profile.secondary_mics.push(crate::audio::types::MicConfig {
+            node_name: "sink_mic_stream".into(),
+            ..Default::default()
+        });
+        let files = BTreeMap::from([(
+            "profiles/Main.json".into(),
+            serde_json::to_string(&profile).unwrap(),
+        )]);
+        assert!(validate_managed_payload(&files, &BTreeMap::new()).is_ok());
+
+        crate::persistence::profiles::migrate_legacy_mic_nodes(&mut profile);
+        assert_eq!(profile.secondary_mics[0].node_name, "source_mic_stream");
+        crate::persistence::profiles::normalize_and_validate(&mut profile).unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_unsafe_global_channels_and_mic() {
+        let mut files = valid_files();
+        files.insert(
+            "channels.json".into(),
+            r#"{"channels":[{"name":"sink_bad.name","label":"Bad"}]}"#.into(),
+        );
+        assert!(validate_managed_payload(&files, &BTreeMap::new()).is_err());
+
+        files.remove("channels.json");
+        let foreign_mic = crate::audio::types::MicConfig {
+            node_name: "source_mic_foreign".into(),
+            ..Default::default()
+        };
+        files.insert(
+            "mic.json".into(),
+            serde_json::to_string(&foreign_mic).unwrap(),
+        );
+        assert!(validate_managed_payload(&files, &BTreeMap::new()).is_err());
     }
 
     #[test]

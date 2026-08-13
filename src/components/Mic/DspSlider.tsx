@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
+import type { KeyboardEvent } from "react";
+import { handleSliderKey } from "../../lib/sliderKeyboard";
 
 interface DspSliderProps {
   label: string;
@@ -70,6 +72,26 @@ export function DspSlider({
   const pct = ((value - min) / (max - min)) * 100;
   const defaultPct = ((defaultValue - min) / (max - min)) * 100;
   const hasEndLabels = endLabel !== undefined && !inlineEndLabel;
+  const valueText = inlineEndLabel && endLabel
+    ? value <= min
+      ? `${label} (${value}${unit})`
+      : value >= max
+        ? `${endLabel} (${value}${unit})`
+        : `${value}${unit} between ${label} and ${endLabel}`
+    : `${value}${unit}`;
+  const sliderProps = {
+    role: "slider",
+    tabIndex: disabled ? -1 : 0,
+    "aria-label": label,
+    "aria-valuemin": min,
+    "aria-valuemax": max,
+    "aria-valuenow": value,
+    "aria-valuetext": valueText,
+    "aria-disabled": disabled || undefined,
+    onKeyDown: (event: KeyboardEvent) => {
+      if (!disabled) handleSliderKey(event, { min, max, step, value, onChange });
+    },
+  } as const;
 
   return (
     <div className={"dsp-row" + (disabled ? " disabled" : "") + (hasEndLabels ? " end-labels" : "")}>
@@ -82,6 +104,7 @@ export function DspSlider({
           <div
             className="hs-track"
             ref={trackRef}
+            {...sliderProps}
             title={`Default: ${defaultValue}${unit} (double-click to reset)`}
             onPointerDown={(e) => {
               if (disabled) return;
@@ -103,6 +126,7 @@ export function DspSlider({
           <div
             className="hs-track"
             ref={trackRef}
+            {...sliderProps}
             title={`Default: ${defaultValue}${unit} (double-click to reset)`}
             onPointerDown={(e) => {
               if (disabled) return;

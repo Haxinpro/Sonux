@@ -218,6 +218,7 @@ struct EqCaptureCtx {
     input: Vec<f32>,
     scratch: Vec<f32>,
     spatial: Option<SpatialEngine>,
+    spatial_params: super::spatial::SpatialRenderParams,
     test: Arc<ChannelTestBuffer>,
 }
 
@@ -431,6 +432,12 @@ impl EqChainHandle {
                 input: Vec::with_capacity(CAPTURE_CHUNK_SAMPLES),
                 scratch: Vec::with_capacity(CAPTURE_CHUNK_SAMPLES),
                 spatial,
+                spatial_params: super::spatial::SpatialRenderParams::new(
+                    config.spatial_enabled,
+                    config.spatial_tuning,
+                    config.spatial_distance,
+                    config.playback_mode == crate::audio::types::PlaybackMode::Headphones,
+                ),
                 test: test.clone(),
             })
             .param_changed(|_, ctx, id, param| {
@@ -453,35 +460,32 @@ impl EqChainHandle {
                 let Some(data) = datas.first_mut() else {
                     return;
                 };
-                let valid = data.chunk().size() as usize;
-                let Some(bytes) = data.data() else { return };
+                let Some(bytes) = super::capture_chunk_bytes(data) else {
+                    return;
+                };
 
                 let input_channels = if ctx.spatial.is_some() {
                     SURROUND_CHANNELS
                 } else {
                     2
                 };
-                let samples = (valid.min(bytes.len()) / 4) / input_channels * input_channels;
+                let samples = (bytes.len() / 4) / input_channels * input_channels;
                 for chunk in bytes[..samples * 4].chunks(CAPTURE_CHUNK_SAMPLES * 4) {
                     decode_f32_chunk(chunk, &mut ctx.input);
                     ctx.test.process_raw(&mut ctx.input);
 
                     if let Some(spatial) = &mut ctx.spatial {
-                        let (enabled, tuning, distance, headphones) = ctx.params.spatial_snapshot();
-                        spatial.process(
-                            &ctx.input,
-                            &mut ctx.scratch,
-                            super::spatial::SpatialRenderParams::new(
-                                enabled, tuning, distance, headphones,
-                            ),
-                        );
+                        if let Some(snapshot) = ctx.params.spatial_snapshot() {
+                            ctx.spatial_params = snapshot;
+                        }
+                        spatial.process(&ctx.input, &mut ctx.scratch, ctx.spatial_params);
                     } else {
                         ctx.scratch.clear();
                         ctx.scratch.extend_from_slice(&ctx.input);
                     }
                     ctx.engine
                         .process_interleaved(&mut ctx.scratch, &ctx.params);
-                    ctx.ring.push(&ctx.scratch);
+                    let _ = ctx.ring.push(&ctx.scratch);
                 }
             })
             .register()

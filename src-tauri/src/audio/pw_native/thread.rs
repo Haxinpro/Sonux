@@ -12,6 +12,7 @@ use pipewire as pw;
 use pw::core::CoreRc;
 use pw::metadata::{Metadata, MetadataListener};
 use pw::node::{Node, NodeListener};
+use pw::proxy::ProxyT;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
@@ -58,6 +59,38 @@ fn is_controllable_app_stream(media_class: &str, props: &HashMap<String, String>
 type Reply<T> = mpsc::Sender<Result<T, SinkError>>;
 /// A set of live links: (output port, input port, proxy).
 type LinkSet = Vec<(u32, u32, pw::link::Link)>;
+
+fn invalidate_link_global(state: &mut State, global_id: u32) -> bool {
+    let mut invalidated = false;
+    let mut retain = |links: &LinkSet| {
+        let keep = !links
+            .iter()
+            .any(|(_, _, link)| link.upcast_ref().id() == global_id);
+        invalidated |= !keep;
+        keep
+    };
+    state.channel_links.retain(|_, links| retain(links));
+    state.bus_links.retain(|_, links| retain(links));
+    state.monitor_links.retain(|_, links| retain(links));
+    state.mic_links.retain(|_, links| retain(links));
+    invalidated
+}
+
+fn invalidate_link_port(state: &mut State, port_id: u32) -> bool {
+    let mut invalidated = false;
+    let mut retain = |links: &LinkSet| {
+        let keep = !links
+            .iter()
+            .any(|(output, input, _)| *output == port_id || *input == port_id);
+        invalidated |= !keep;
+        keep
+    };
+    state.channel_links.retain(|_, links| retain(links));
+    state.bus_links.retain(|_, links| retain(links));
+    state.monitor_links.retain(|_, links| retain(links));
+    state.mic_links.retain(|_, links| retain(links));
+    invalidated
+}
 
 pub enum Cmd {
     CreateSink {
@@ -414,67 +447,97 @@ fn setup_and_run(
                 enum Heal {
                     Nothing,
                     Relink,
+                    RelinkAll,
+                    ReconcileMics,
                     Recreate(String, String, u8),
                 }
                 let heal = {
                     let mut s = state.borrow_mut();
-                    s.links.remove(&id);
-                    s.ports.remove(&id);
-                    let Some(node) = s.nodes.remove(&id) else {
-                        return;
-                    };
-                    let name = node.props.get("node.name").cloned().unwrap_or_default();
-                    if node.media_class == SINK_CLASS {
-                        s.meters.remove(&name);
-                        s.adopted_sinks.remove(&name);
-                    }
-                    match s.desired.get(&name).cloned() {
-                        Some((label, kind)) => {
-                            // Drop any dangling proxy so the heal isn't
-                            // blocked by a corpse.
-                            match kind {
-                                0 => {
-                                    s.owned_sinks.remove(&name);
-                                }
-                                1 => {
-                                    s.bus_sources.remove(&name);
-                                }
-                                _ => {}
+                    let was_link = s.links.remove(&id).is_some();
+                    let invalidated_link = was_link && invalidate_link_global(&mut s, id);
+                    let was_port = s.ports.remove(&id).is_some();
+                    let invalidated_port = was_port && invalidate_link_port(&mut s, id);
+                    match s.nodes.remove(&id) {
+                        None if invalidated_link || invalidated_port => Heal::RelinkAll,
+                        None => Heal::Nothing,
+                        Some(_) if invalidated_link || invalidated_port => {
+                            // Global ids are unique across object types. Keep
+                            // this conservative fallback if a server ever
+                            // violates that invariant.
+                            Heal::RelinkAll
+                        }
+                        Some(node) => {
+                            let name = node.props.get("node.name").cloned().unwrap_or_default();
+                            if node.media_class == SINK_CLASS {
+                                s.meters.remove(&name);
+                                s.adopted_sinks.remove(&name);
                             }
-                            // A deliberate recreate (mic rename) already has
-                            // a fresh proxy/node - don't double up. For the
-                            // mic the new proxy is set synchronously before
-                            // this removal event, so `mic_source.is_some()`
-                            // can't tell our own destroy from an external one;
-                            // the expected-removals counter can.
-                            let already_back = match kind {
-                                2 => {
-                                    let expected =
-                                        s.mic_expected_removals.entry(name.clone()).or_default();
-                                    if *expected > 0 {
-                                        *expected -= 1;
-                                        true
+                            if s.is_managed_channel(&name) {
+                                // Inserts capture a specific sink global. Retaining
+                                // one across recreation would route from a playback
+                                // stream whose capture side still targets the dead
+                                // node, leaving the healed channel silent.
+                                s.eq_streams.remove(&name);
+                                s.spatial_tests.remove(&name);
+                                s.channel_links.remove(&name);
+                                s.bus_links.retain(|(_, channel), _| channel != &name);
+                                s.monitor_links.remove(&name);
+                                s.eq_desired_targets.clear();
+                            }
+                            match s.desired.get(&name).cloned() {
+                                Some((label, kind)) => {
+                                    // Remove the stale proxy before recreating the node.
+                                    match kind {
+                                        0 => {
+                                            s.owned_sinks.remove(&name);
+                                        }
+                                        1 => {
+                                            s.bus_sources.remove(&name);
+                                        }
+                                        _ => {}
+                                    }
+                                    // A deliberate mic recreate installs its replacement proxy
+                                    // before this removal event arrives. The proxy map is populated
+                                    // for both that case and an unexpected removal, so the
+                                    // expected-removal counter distinguishes them.
+                                    let already_back = match kind {
+                                        2 => {
+                                            let expected = s
+                                                .mic_expected_removals
+                                                .entry(name.clone())
+                                                .or_default();
+                                            if *expected > 0 {
+                                                *expected -= 1;
+                                                true
+                                            } else {
+                                                // An unexpected removal left a stale proxy. Remove
+                                                // it before recreating the microphone node below.
+                                                s.mic_sources.remove(&name);
+                                                false
+                                            }
+                                        }
+                                        _ => s.node_by_name(&name).is_some(),
+                                    };
+                                    if already_back {
+                                        Heal::Relink
                                     } else {
-                                        // External destroy (wpctl, a session
-                                        // hiccup): drop the dead proxy so the
-                                        // recreate below isn't blocked by it.
-                                        s.mic_sources.remove(&name);
-                                        false
+                                        s.meters.remove(&name);
+                                        Heal::Recreate(name, label, kind)
                                     }
                                 }
-                                _ => s.node_by_name(&name).is_some(),
-                            };
-                            if already_back {
-                                Heal::Relink
-                            } else {
-                                s.meters.remove(&name);
-                                Heal::Recreate(name, label, kind)
+                                // An output device vanished: relink so affected
+                                // channels fail over to the default.
+                                None if node.media_class == SINK_CLASS => Heal::Relink,
+                                None if is_routable_input(
+                                    &node.media_class,
+                                    Some(name.as_str()),
+                                ) =>
+                                {
+                                    Heal::ReconcileMics
+                                }
+                                None => Heal::Nothing,
                             }
                         }
-                        // An output device vanished: relink so affected
-                        // channels fail over to the default.
-                        None if node.media_class == SINK_CLASS => Heal::Relink,
-                        None => Heal::Nothing,
                     }
                 };
                 match heal {
@@ -503,6 +566,11 @@ fn setup_and_run(
                         ensure_all_mic_links(&state);
                     }
                     Heal::Relink => ensure_all_links(&state),
+                    Heal::RelinkAll => {
+                        ensure_all_links(&state);
+                        ensure_all_mic_links(&state);
+                    }
+                    Heal::ReconcileMics => reconcile_follow_default_mics(&state),
                     Heal::Nothing => {}
                 }
             }
@@ -622,35 +690,16 @@ fn on_global(
                         }
                     } else if key == Some("default.audio.source") {
                         let name = parse_name(value);
-                        let rebuild = {
+                        let changed = {
                             let mut s = state_m.borrow_mut();
                             let changed = s.default_source_name != name;
                             s.default_source_name = name;
-                            // A follow-default mic chain is pinned to the
-                            // resolved device (dont-reconnect), so it
-                            // tracks default changes by rebuilding.
-                            if !changed {
-                                Vec::new()
-                            } else {
-                                s.mic_configs
-                                    .iter()
-                                    .filter(|(mic_name, config)| {
-                                        config.enabled
-                                            && config.input_device.is_none()
-                                            && s.mic_streams.contains_key(*mic_name)
-                                    })
-                                    .map(|(mic_name, _)| mic_name.clone())
-                                    .collect()
-                            }
+                            changed
                         };
-                        for mic_name in rebuild {
-                            let config = state_m.borrow().mic_configs.get(&mic_name).cloned();
-                            if let Some(config) = config {
-                                if let Err(error) = build_mic_streams(&state_m, &mic_name, &config)
-                                {
-                                    eprintln!("sonux: rebuild mic {mic_name} failed: {error}");
-                                }
-                            }
+                        // Follow-default chains are pinned to one safe source,
+                        // so metadata changes reconcile that concrete target.
+                        if changed {
+                            reconcile_follow_default_mics(&state_m);
                         }
                     }
                     0
@@ -856,6 +905,10 @@ fn on_node(
     // A new hardware sink may be the (returning) target of a channel.
     if media_class == SINK_CLASS {
         ensure_all_links(state);
+    } else if is_routable_input(&media_class, Some(&node_name)) {
+        // The metadata default can remain an unsafe virtual mic while the
+        // best safe fallback changes underneath it (USB mic unplug/replug).
+        reconcile_follow_default_mics(state);
     }
 }
 
@@ -876,30 +929,142 @@ fn build_mic_streams(
     // Resolve "follow default" to the actual hardware source at build
     // time - the capture must be pinned (and must never point at our own
     // virtual mic, or the chain would eat its own output).
-    let mic_target = match config.input_device.as_deref() {
-        Some(name) if s.is_routable_input_name(name) => Some(name.to_string()),
-        Some(name) => {
-            return Err(SinkError::Config(format!(
-                "configured microphone input is unavailable: {name}"
-            )));
-        }
-        None => s
-            .default_source_name
-            .clone()
-            .filter(|name| s.is_routable_input_name(name)),
-    };
+    let mic_target = resolve_mic_target(
+        config.input_device.as_deref(),
+        s.default_source_name.as_deref(),
+        fallback_input(&s).as_deref(),
+        |name| s.is_routable_input_name(name),
+    )?;
     let levels = s
         .levels
         .clone()
         .ok_or_else(|| SinkError::Config("meter storage is unavailable".into()))?;
     drop(s);
-    let streams = MicStreams::new(&core, config, node_name, mic_target.as_deref(), levels)?;
+    let streams = MicStreams::new(&core, config, node_name, &mic_target, levels)?;
     let mut s = state.borrow_mut();
     s.mic_links.remove(node_name);
     s.mic_streams.insert(node_name.to_string(), streams);
     drop(s);
     ensure_mic_links(state, node_name);
     Ok(())
+}
+
+/// Keep enabled follow-default chains pinned to the best currently safe
+/// source. Explicitly configured microphones are deliberately excluded: a
+/// fallback source appearing or disappearing must never migrate them.
+fn reconcile_follow_default_mics(state: &Rc<RefCell<State>>) {
+    let names: Vec<String> = state
+        .borrow()
+        .mic_configs
+        .iter()
+        .filter(|(_, config)| config.enabled && config.input_device.is_none())
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    for name in names {
+        let (config, current_target, current_valid, desired_target) = {
+            let s = state.borrow();
+            let Some(config) = s.mic_configs.get(&name).cloned() else {
+                continue;
+            };
+            let current_target = s
+                .mic_streams
+                .get(&name)
+                .map(|streams| streams.capture_target().to_string());
+            let current_valid = current_target
+                .as_deref()
+                .is_some_and(|target| s.is_routable_input_name(target));
+            let fallback = fallback_input(&s);
+            let desired_target = resolve_mic_target(
+                None,
+                s.default_source_name.as_deref(),
+                fallback.as_deref(),
+                |target| s.is_routable_input_name(target),
+            );
+            (config, current_target, current_valid, desired_target)
+        };
+
+        match desired_target {
+            Ok(desired)
+                if !follow_default_target_needs_rebuild(
+                    current_target.as_deref(),
+                    current_valid,
+                    &desired,
+                ) => {}
+            Ok(_) => {
+                if let Err(error) = build_mic_streams(state, &name, &config) {
+                    // A stream pinned to a vanished source cannot recover by
+                    // itself (`node.dont-reconnect=true`). Drop that dead
+                    // runtime so a later source appearance necessarily builds
+                    // a fresh one; keep the desired config intact.
+                    if !current_valid {
+                        let mut s = state.borrow_mut();
+                        s.mic_streams.remove(&name);
+                        s.mic_links.remove(&name);
+                    }
+                    eprintln!("sonux: reconcile microphone {name} failed: {error}");
+                }
+            }
+            Err(error) => {
+                if !current_valid {
+                    let mut s = state.borrow_mut();
+                    s.mic_streams.remove(&name);
+                    s.mic_links.remove(&name);
+                }
+                eprintln!("sonux: reconcile microphone {name} deferred: {error}");
+            }
+        }
+    }
+}
+
+fn follow_default_target_needs_rebuild(
+    current: Option<&str>,
+    current_valid: bool,
+    desired: &str,
+) -> bool {
+    !current_valid || current != Some(desired)
+}
+
+fn resolve_mic_target(
+    configured: Option<&str>,
+    default: Option<&str>,
+    fallback: Option<&str>,
+    is_routable: impl Fn(&str) -> bool,
+) -> Result<String, SinkError> {
+    match configured {
+        Some(name) if is_routable(name) => Ok(name.to_string()),
+        Some(name) => Err(SinkError::Config(format!(
+            "configured microphone input is unavailable: {name}"
+        ))),
+        None => default
+            .filter(|name| is_routable(name))
+            .or_else(|| fallback.filter(|name| is_routable(name)))
+            .map(str::to_string)
+            .ok_or_else(|| {
+                SinkError::Config(
+                    "no safe hardware default microphone is currently available".into(),
+                )
+            }),
+    }
+}
+
+fn fallback_input(state: &State) -> Option<String> {
+    state
+        .nodes
+        .values()
+        .filter_map(|node| {
+            let name = node.props.get("node.name")?;
+            is_routable_input(&node.media_class, Some(name)).then(|| {
+                let priority = node
+                    .props
+                    .get("priority.session")
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(0);
+                (priority, name.clone())
+            })
+        })
+        .max_by_key(|(priority, _)| *priority)
+        .map(|(_, name)| name)
 }
 
 /// Restore the configuration that preceded an asynchronous mic create.
@@ -2450,6 +2615,58 @@ mod tests {
             VIRTUAL_SOURCE_CLASS,
             Some("sink_stream")
         ));
+    }
+
+    #[test]
+    fn microphone_capture_never_falls_back_to_an_unpinned_default() {
+        let routable = |name: &str| name == "alsa_input.usb_mic";
+        assert_eq!(
+            resolve_mic_target(None, Some("alsa_input.usb_mic"), None, routable).unwrap(),
+            "alsa_input.usb_mic"
+        );
+        assert_eq!(
+            resolve_mic_target(None, Some("sink_mic"), Some("alsa_input.usb_mic"), routable,)
+                .unwrap(),
+            "alsa_input.usb_mic"
+        );
+        assert!(resolve_mic_target(None, Some("sink_mic"), None, routable).is_err());
+        assert!(resolve_mic_target(None, None, None, routable).is_err());
+        assert!(resolve_mic_target(Some("missing_input"), None, None, routable).is_err());
+    }
+
+    #[test]
+    fn follow_default_microphone_tracks_safe_fallback_lifecycle() {
+        let routable = |name: &str| matches!(name, "mic_a" | "mic_b");
+        let default = Some("sink_mic");
+
+        let first = resolve_mic_target(None, default, Some("mic_a"), routable).unwrap();
+        assert_eq!(first, "mic_a");
+        assert!(!follow_default_target_needs_rebuild(
+            Some("mic_a"),
+            true,
+            &first
+        ));
+
+        // A disappears and B is now the best safe source.
+        let second = resolve_mic_target(None, default, Some("mic_b"), routable).unwrap();
+        assert!(follow_default_target_needs_rebuild(
+            Some("mic_a"),
+            false,
+            &second
+        ));
+        assert_eq!(second, "mic_b");
+
+        // With no safe source the runtime is deferred. A later appearance
+        // has no current stream and must create a fresh one.
+        assert!(resolve_mic_target(None, default, None, routable).is_err());
+        let appeared = resolve_mic_target(None, default, Some("mic_a"), routable).unwrap();
+        assert!(follow_default_target_needs_rebuild(None, false, &appeared));
+
+        // An explicitly pinned target ignores fallback churn entirely.
+        assert_eq!(
+            resolve_mic_target(Some("mic_a"), default, Some("mic_b"), routable).unwrap(),
+            "mic_a"
+        );
     }
 
     #[test]
