@@ -84,6 +84,16 @@ impl LevelStore {
             .map(|p| f32::from_bits(p[channel.min(1)].swap(0, Ordering::Relaxed)))
             .unwrap_or(0.0)
     }
+
+    /// Reset every peak without locking the dynamic name registry. Used while
+    /// visual metering is suppressed so an old maximum cannot flash when the
+    /// window or meters become active again.
+    pub fn discard_all(&self) {
+        for peak in &self.peaks {
+            peak[0].store(0, Ordering::Relaxed);
+            peak[1].store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 impl Default for LevelStore {
@@ -116,6 +126,20 @@ mod tests {
         store.release("sink_game");
         let c = store.slot_for("sink_voice").expect("slot");
         assert_eq!(c, a, "freed slot is reused");
+    }
+
+    #[test]
+    fn discard_all_clears_pending_peaks() {
+        let store = LevelStore::new();
+        let game = store.slot_for("sink_game").expect("game slot");
+        let chat = store.slot_for("sink_chat").expect("chat slot");
+        store.raise(game, 0, 0.8);
+        store.raise(chat, 1, 0.6);
+
+        store.discard_all();
+
+        assert_eq!(store.drain(game, 0), 0.0);
+        assert_eq!(store.drain(chat, 1), 0.0);
     }
 
     #[test]

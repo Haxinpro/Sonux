@@ -13,7 +13,13 @@ pub const MAX_BUSES: usize = 4;
 
 /// True if `name` is a mix bus node (not a channel, not a service node).
 pub fn is_bus_name(name: &str) -> bool {
-    name == DEFAULT_BUS_NODE || name.starts_with(BUS_PREFIX)
+    name == DEFAULT_BUS_NODE
+        || name.strip_prefix(BUS_PREFIX).is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+                })
+        })
 }
 
 /// True if `name` is the always-on master mix: it carries every channel,
@@ -119,7 +125,16 @@ impl Buses {
             Err(_) => return Self::default(),
         };
         match fs::read_to_string(&path) {
-            Ok(raw) => serde_json::from_str::<Self>(&raw).ok().unwrap_or_default(),
+            Ok(raw) => {
+                let mut buses = serde_json::from_str::<Self>(&raw).ok().unwrap_or_default();
+                let channels = legacy_channels
+                    .channels
+                    .iter()
+                    .map(|channel| channel.name.clone())
+                    .collect::<Vec<_>>();
+                buses.sanitize(&channels);
+                buses
+            }
             Err(_) => {
                 let mut buses = Self::default();
                 buses.buses[0].channels = legacy_channels
@@ -146,6 +161,31 @@ impl Buses {
 
     pub fn get(&self, name: &str) -> Option<&BusDef> {
         self.buses.iter().find(|b| b.name == name)
+    }
+
+    /// Drop hand-edited bus names and memberships that could otherwise make
+    /// backend commands act on nodes outside Sonux's owned graph.
+    pub fn sanitize(&mut self, channel_names: &[String]) {
+        let mut seen = std::collections::HashSet::new();
+        let mut user_buses = 0usize;
+        self.buses.retain_mut(|bus| {
+            let user = !is_master(&bus.name);
+            let keep = is_bus_name(&bus.name)
+                && seen.insert(bus.name.clone())
+                && (!user || user_buses < MAX_BUSES);
+            if !keep {
+                return false;
+            }
+            if user {
+                user_buses += 1;
+            }
+            let mut members = std::collections::HashSet::new();
+            bus.channels.retain(|channel| {
+                channel_names.contains(channel) && members.insert(channel.clone())
+            });
+            bus.volume_percent = bus.volume_percent.min(150);
+            true
+        });
     }
 
     /// Ensure the master mix exists, sits first, and carries every channel.
@@ -333,6 +373,45 @@ mod tests {
         assert!(is_bus_name(&d.name));
         assert!(is_bus_name("sink_stream"));
         assert!(!is_bus_name("sink_game"));
+        assert!(!is_bus_name("sink_bus_"));
+        assert!(!is_bus_name("sink_bus_../../foreign"));
+    }
+
+    #[test]
+    fn sanitize_drops_foreign_names_members_and_duplicates() {
+        let mut buses = Buses {
+            buses: vec![
+                Buses::default().buses[0].clone(),
+                BusDef {
+                    name: "sink_bus_voice".into(),
+                    label: "Voice".into(),
+                    channels: vec!["sink_game".into(), "foreign".into(), "sink_game".into()],
+                    exclude: false,
+                    volume_percent: 255,
+                    muted: false,
+                },
+                BusDef {
+                    name: "sink_bus_voice".into(),
+                    label: "Duplicate".into(),
+                    channels: Vec::new(),
+                    exclude: false,
+                    volume_percent: 100,
+                    muted: false,
+                },
+                BusDef {
+                    name: "foreign_node".into(),
+                    label: "Foreign".into(),
+                    channels: Vec::new(),
+                    exclude: false,
+                    volume_percent: 100,
+                    muted: false,
+                },
+            ],
+        };
+        buses.sanitize(&["sink_game".into()]);
+        assert_eq!(buses.buses.len(), 2);
+        assert_eq!(buses.buses[1].channels, vec!["sink_game"]);
+        assert_eq!(buses.buses[1].volume_percent, 150);
     }
 
     #[test]

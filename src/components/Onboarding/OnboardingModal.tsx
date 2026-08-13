@@ -48,24 +48,29 @@ function FlowDiagram() {
   );
 }
 
-// Three short cards: the mental model first (as a picture), then the two
-// things you can't discover just by looking at the screen.
+// Keep the tour focused on the current workflow: build the board, route apps,
+// save the whole setup as a profile, then optionally process the microphone.
 const STEPS: Step[] = [
   {
     icon: "graphic_eq",
-    title: "Your sound, on a board",
-    body: "Every app's audio lands on a channel you control. Send each channel to your ears - and tap any group as a recording.",
+    title: "Build your audio setup",
+    body: "Channels keep game, chat and media separate. Set their levels and outputs in Mixer, and create mixes when OBS or another recorder needs its own feed.",
     diagram: true,
   },
   {
     icon: "grid_view",
-    title: "Sort your apps",
-    body: "New apps appear on their own. Drop each onto a channel - game, chat, music - and Sonux keeps it there next time.",
+    title: "Route games and apps",
+    body: "Open Apps or drag a running app onto a Mixer channel. Sonux remembers where that app belongs the next time it starts.",
+  },
+  {
+    icon: "bookmarks",
+    title: "Keep complete profiles",
+    body: "Profiles remember channels, levels, routing, outputs, EQ, mixes and microphone settings. Manage them on Profiles, and optionally link a game or app to activate one automatically.",
   },
   {
     icon: "mic",
-    title: "Microphone",
-    body: "Optional: run your mic through a noise gate, compressor and limiter, then pick the result in Discord or OBS.",
+    title: "Process your microphone",
+    body: "Optional: shape your mic with a noise gate, compressor and limiter. Then choose the Sonux microphone in Discord, OBS or another voice app.",
   },
 ];
 
@@ -103,7 +108,7 @@ export function OnboardingModal() {
       <>
         <div className="modal-title">That's the tour</div>
         <p className="modal-text">
-          Channels, apps and the mic are all live - your setup is untouched.
+          Channels, apps, profiles and the mic are all live - your setup is untouched.
         </p>
         <div className="ob-foot">
           <button type="button" className="modal-btn" onClick={() => setStep(step - 1)}>

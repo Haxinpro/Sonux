@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { clearPublishedLevels } from "../lib/liveMeters";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppStream,
@@ -6,6 +7,7 @@ import type {
   EqConfig,
   MicClient,
   MicConfig,
+  MeterMode,
   OutputDevice,
   ProfileInfo,
   SeenApp,
@@ -15,28 +17,50 @@ import type {
 // Faders fire on every pointer move; debounce backend calls per target so a
 // drag doesn't spawn a pactl subprocess per pixel. UI state updates
 // optimistically and immediately.
-const pendingInvokes = new Map<string, number>();
-function debouncedInvoke(key: string, cmd: string, args: Record<string, unknown>, onError: (e: unknown) => void) {
-  const existing = pendingInvokes.get(key);
-  if (existing !== undefined) clearTimeout(existing);
-  pendingInvokes.set(
-    key,
-    window.setTimeout(() => {
-      pendingInvokes.delete(key);
-      invoke(cmd, args).catch(onError);
-    }, 90),
-  );
+interface PendingInvoke {
+  timer: number;
+  run: () => Promise<void>;
 }
 
-/** Per-sink [left, right] peak amplitudes (0-1), streamed from the native backend. */
-export type Levels = Record<string, [number, number]>;
+const pendingInvokes = new Map<string, PendingInvoke>();
+function debouncedInvoke(key: string, cmd: string, args: Record<string, unknown>, onError: (e: unknown) => void) {
+  const existing = pendingInvokes.get(key);
+  if (existing) clearTimeout(existing.timer);
+  const run = async () => {
+    try {
+      await invoke(cmd, args);
+    } catch (error) {
+      onError(error);
+    }
+  };
+  const pending: PendingInvoke = {
+    timer: window.setTimeout(() => {
+      if (pendingInvokes.get(key) === pending) pendingInvokes.delete(key);
+      void run();
+    }, 90),
+    run,
+  };
+  pendingInvokes.set(key, pending);
+}
+
+async function flushPendingInvokes() {
+  const pending = [...pendingInvokes.values()];
+  pendingInvokes.clear();
+  for (const entry of pending) clearTimeout(entry.timer);
+  await Promise.all(pending.map((entry) => entry.run()));
+}
+
+function cancelPendingInvokes() {
+  for (const entry of pendingInvokes.values()) clearTimeout(entry.timer);
+  pendingInvokes.clear();
+}
 
 interface MixerStore {
   channels: VirtualSink[];
   appStreams: AppStream[];
-  /** Live VU levels; stays empty under the pactl fallback backend. */
-  levels: Levels;
-  setLevels: (levels: Levels) => void;
+  /** Visual-only live meter policy. */
+  meterMode: MeterMode;
+  setMeterMode: (mode: MeterMode) => Promise<void>;
   /** Physical output devices. */
   outputDevices: OutputDevice[];
   /** Channel -> chosen output node name (null = follow system default). */
@@ -64,16 +88,31 @@ interface MixerStore {
   setChannelEq: (sinkName: string, config: EqConfig) => Promise<void>;
   /** Mic chain (Phase 3). Null until loaded. */
   micConfig: MicConfig | null;
+  micConfigs: MicConfig[];
+  selectedMicNode: string;
+  multipleMics: boolean;
+  micCreationOpen: boolean;
   micClients: MicClient[];
   inputDevices: OutputDevice[];
   fetchMic: () => Promise<void>;
   fetchMicClients: () => Promise<void>;
   setMicConfig: (patch: Partial<MicConfig>) => Promise<void>;
+  setMicChannelConfig: (nodeName: string, patch: Partial<MicConfig>) => Promise<void>;
+  addMicChannel: (label: string, inputDevice: string | null, copyFrom: string | null) => Promise<void>;
+  removeMicChannel: (nodeName: string) => Promise<void>;
+  moveMicChannel: (from: string, to: string) => void;
+  commitMicChannelOrder: () => Promise<void>;
+  selectMic: (nodeName: string) => void;
+  setMultipleMics: (enabled: boolean) => Promise<void>;
+  setMicCreationOpen: (open: boolean) => void;
   profiles: ProfileInfo[];
   /** Bind/clear an output device that auto-loads a profile (Phase 5). */
   setProfileTrigger: (name: string, device: string | null) => Promise<void>;
   /** Create a clean-slate profile (saved, not applied). */
-  createBlankProfile: (name: string) => Promise<void>;
+  createBlankProfile: (name: string, micEnabled: boolean) => Promise<void>;
+  /** Copy an existing profile's audio setup into a new profile. */
+  copyProfile: (sourceName: string, name: string) => Promise<void>;
+  renameProfile: (name: string, newName: string) => Promise<void>;
   /** A profile was switched outside the UI (tray) - sync everything. */
   onProfileChanged: (name: string) => Promise<void>;
   /** App history (live + gone + ignored). */
@@ -87,7 +126,7 @@ interface MixerStore {
     sinkName: string | null,
   ) => Promise<void>;
   /** Channel management: labels are free-form, sink names are stable. */
-  addChannel: (label: string, icon: string | null) => Promise<void>;
+  addChannel: (label: string, icon: string | null, spatial?: boolean) => Promise<void>;
   renameChannel: (sinkName: string, label: string) => Promise<void>;
   removeChannel: (sinkName: string) => Promise<void>;
   /** Visual-only reorder while dragging a strip. */
@@ -159,20 +198,16 @@ const jsonEqual = (a: unknown, b: unknown): boolean =>
 export const useMixerStore = create<MixerStore>((set, get) => ({
   channels: [],
   appStreams: [],
-  levels: {},
-  setLevels: (levels) => {
-    // Levels arrive at 10 Hz even when everything is silent; skipping
-    // no-op updates avoids re-rendering every strip 10×/second at idle.
-    const prev = get().levels;
-    const keys = Object.keys(levels);
-    const unchanged =
-      keys.length === Object.keys(prev).length &&
-      keys.every((k) => {
-        const a = prev[k];
-        const b = levels[k];
-        return a && Math.abs(a[0] - b[0]) < 1e-4 && Math.abs(a[1] - b[1]) < 1e-4;
-      });
-    if (!unchanged) set({ levels });
+  meterMode: "fps_60",
+  setMeterMode: async (mode) => {
+    const previous = get().meterMode;
+    if (mode === "off") clearPublishedLevels();
+    set({ meterMode: mode });
+    try {
+      await invoke("set_meter_mode", { mode });
+    } catch (e) {
+      set({ meterMode: previous, error: String(e) });
+    }
   },
   outputDevices: [],
   channelOutputs: {},
@@ -251,9 +286,17 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
         balance_a: string | null;
         balance_b: string | null;
         show_balance: boolean;
+        multiple_mics: boolean;
+        meter_mode: MeterMode;
       }>("get_prefs")
         .then((p) => {
-          set({ balanceA: p.balance_a, balanceB: p.balance_b, showBalance: p.show_balance });
+          set({
+            balanceA: p.balance_a,
+            balanceB: p.balance_b,
+            showBalance: p.show_balance,
+            multipleMics: p.multiple_mics,
+            meterMode: p.meter_mode,
+          });
           if (!p.onboarded) set({ showOnboarding: true });
         })
         .catch(() => {});
@@ -299,7 +342,6 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       const s = get();
       const patch: Partial<MixerStore> = {};
       if (!jsonEqual(s.appStreams, appStreams)) patch.appStreams = appStreams;
-      if (s.error !== null) patch.error = null;
       if (Object.keys(patch).length) set(patch);
     } catch (e) {
       set({ error: String(e) });
@@ -315,7 +357,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     debouncedInvoke(
       `chvol:${sinkName}`,
       "set_channel_volume",
-      { sinkName, volume },
+      { sinkName, volume, expectedProfile: get().activeProfile },
       (e) => {
         set({ error: String(e) });
         void get().fetchChannels();
@@ -330,7 +372,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       ),
     }));
     try {
-      await invoke("toggle_channel_mute", { sinkName, muted });
+      await invoke("toggle_channel_mute", { sinkName, muted, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchChannels();
@@ -346,7 +388,11 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       ),
     }));
     try {
-      await invoke("route_app_to_channel", { streamIndex, sinkName });
+      await invoke("route_app_to_channel", {
+        streamIndex,
+        sinkName,
+        expectedProfile: get().activeProfile,
+      });
     } catch (e) {
       set({ error: String(e) });
     } finally {
@@ -393,7 +439,11 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       channelOutputs: { ...s.channelOutputs, [sinkName]: outputName },
     }));
     try {
-      await invoke("set_channel_output", { sinkName, outputName: outputName ?? "" });
+      await invoke("set_channel_output", {
+        sinkName,
+        outputName: outputName ?? "",
+        expectedProfile: get().activeProfile,
+      });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchOutputs();
@@ -405,7 +455,11 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       channelFailover: { ...s.channelFailover, [sinkName]: enabled },
     }));
     try {
-      await invoke("set_channel_failover", { sinkName, enabled });
+      await invoke("set_channel_failover", {
+        sinkName,
+        enabled,
+        expectedProfile: get().activeProfile,
+      });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchOutputs();
@@ -433,19 +487,32 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     set({ eqConfigs: { ...get().eqConfigs, [sinkName]: config } });
     // Debounced per channel: a band drag settles into one apply, and two
     // open EQ panels never clobber each other's pending call.
-    debouncedInvoke(`eq:${sinkName}`, "set_channel_eq", { sinkName, config }, (e) => {
+    debouncedInvoke(`eq:${sinkName}`, "set_channel_eq", {
+      sinkName,
+      config,
+      expectedProfile: get().activeProfile,
+    }, (e) => {
       set({ error: String(e) });
       void get().fetchEq();
     });
   },
 
+  micConfigs: [],
+  selectedMicNode: "sink_mic",
+  multipleMics: false,
+  micCreationOpen: false,
+
   fetchMic: async () => {
     try {
-      const [micConfig, inputDevices] = await Promise.all([
-        invoke<MicConfig>("get_mic_config"),
+      const [micConfigs, inputDevices] = await Promise.all([
+        invoke<MicConfig[]>("get_mic_configs"),
         invoke<OutputDevice[]>("get_input_devices"),
       ]);
-      set({ micConfig, inputDevices });
+      const micConfig = micConfigs.find((mic) => mic.node_name === "sink_mic") ?? micConfigs[0] ?? null;
+      const selectedMicNode = micConfigs.some((mic) => mic.node_name === get().selectedMicNode)
+        ? get().selectedMicNode
+        : "sink_mic";
+      set({ micConfig, micConfigs, inputDevices, selectedMicNode });
     } catch (e) {
       set({ error: String(e) });
     }
@@ -461,16 +528,97 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   setMicConfig: async (patch) => {
-    const current = get().micConfig;
+    await get().setMicChannelConfig("sink_mic", patch);
+  },
+
+  setMicChannelConfig: async (nodeName, patch) => {
+    const current = get().micConfigs.find((mic) => mic.node_name === nodeName)
+      ?? (nodeName === "sink_mic" ? get().micConfig : null);
     if (!current) return;
     const config = { ...current, ...patch };
-    set({ micConfig: config });
+    const micConfigs = get().micConfigs.map((mic) => mic.node_name === nodeName ? config : mic);
+    set({ micConfigs, ...(nodeName === "sink_mic" ? { micConfig: config } : {}) });
     // Debounced: slider drags and rename typing settle into one apply.
-    debouncedInvoke("micConfig", "set_mic_config", { config }, (e) => {
+    debouncedInvoke(`micConfig:${nodeName}`, "set_mic_config", {
+      config,
+      expectedProfile: get().activeProfile,
+    }, (e) => {
       set({ error: String(e) });
       void get().fetchMic();
     });
   },
+
+  addMicChannel: async (label, inputDevice, copyFrom) => {
+    try {
+      const config = await invoke<MicConfig>("add_mic_channel", {
+        label,
+        inputDevice,
+        copyFrom,
+        expectedProfile: get().activeProfile,
+      });
+      set({ micConfigs: [...get().micConfigs, config], selectedMicNode: config.node_name });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  removeMicChannel: async (nodeName) => {
+    try {
+      await invoke("remove_mic_channel", { nodeName, expectedProfile: get().activeProfile });
+      set({
+        micConfigs: get().micConfigs.filter((mic) => mic.node_name !== nodeName),
+        selectedMicNode: get().selectedMicNode === nodeName ? "sink_mic" : get().selectedMicNode,
+      });
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  moveMicChannel: (from, to) => {
+    if (from === "sink_mic" || from === to) return;
+    const configs = [...get().micConfigs];
+    const fromIndex = configs.findIndex((mic) => mic.node_name === from);
+    if (fromIndex < 1) return;
+    const [moving] = configs.splice(fromIndex, 1);
+    const targetIndex = to === "sink_mic"
+      ? 1
+      : configs.findIndex((mic) => mic.node_name === to);
+    configs.splice(targetIndex < 1 ? configs.length : targetIndex, 0, moving);
+    set({ micConfigs: configs });
+  },
+
+  commitMicChannelOrder: async () => {
+    try {
+      await invoke("reorder_mic_channels", {
+        order: get().micConfigs.slice(1).map((mic) => mic.node_name),
+        expectedProfile: get().activeProfile,
+      });
+    } catch (e) {
+      set({ error: String(e) });
+      await get().fetchMic();
+    }
+  },
+
+  selectMic: (nodeName) => set({ selectedMicNode: nodeName }),
+
+  setMultipleMics: async (enabled) => {
+    const previous = {
+      multipleMics: get().multipleMics,
+      selectedMicNode: get().selectedMicNode,
+      micCreationOpen: get().micCreationOpen,
+    };
+    set({
+      multipleMics: enabled,
+      ...(!enabled ? { selectedMicNode: "sink_mic", micCreationOpen: false } : {}),
+    });
+    try {
+      await invoke("set_multiple_mics", { enabled });
+    } catch (e) {
+      set({ ...previous, error: String(e) });
+    }
+  },
+
+  setMicCreationOpen: (open) => set({ micCreationOpen: open }),
 
   fetchProfiles: async () => {
     try {
@@ -491,6 +639,9 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   onProfileChanged: async (name) => {
+    // The backend has already switched (tray/application automation). Never
+    // let an edit queued for the previous profile land in the new one.
+    cancelPendingInvokes();
     set({ activeProfile: name });
     await Promise.all([
       get().fetchChannels(),
@@ -505,13 +656,33 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     ]);
   },
 
-  createBlankProfile: async (name) => {
+  createBlankProfile: async (name, micEnabled) => {
     try {
-      await invoke("create_blank_profile", { name });
+      await invoke("create_blank_profile", { name, micEnabled });
       await get().fetchProfiles();
       // Switch to the fresh profile right away - creating a blank slate
       // and not seeing anything change reads as a bug.
       await get().loadProfile(name);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  copyProfile: async (sourceName, name) => {
+    try {
+      await invoke("copy_profile", { sourceName, name });
+      await get().fetchProfiles();
+      await get().loadProfile(name);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  renameProfile: async (name, newName) => {
+    try {
+      await invoke("rename_profile", { name, newName });
+      if (get().activeProfile === name) set({ activeProfile: newName });
+      await get().fetchProfiles();
     } catch (e) {
       set({ error: String(e) });
     }
@@ -544,6 +715,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       await invoke("forget_app", {
         matchProp: app.match_prop,
         matchValue: app.match_value,
+        expectedProfile: get().activeProfile,
       });
       await get().fetchSeenApps();
     } catch (e) {
@@ -557,6 +729,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
         matchProp: app.match_prop,
         matchValue: app.match_value,
         sinkName: sinkName ?? "",
+        expectedProfile: get().activeProfile,
       });
       await get().fetchSeenApps();
     } catch (e) {
@@ -566,6 +739,9 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
 
   loadProfile: async (name) => {
     try {
+      // Manual switches preserve the final value of an in-progress drag in
+      // the profile being left, then move to the requested profile.
+      await flushPendingInvokes();
       await invoke("load_profile", { name });
       set({ activeProfile: name });
       // Layout, volumes and routing all changed backend-side.
@@ -587,16 +763,17 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   deleteProfile: async (name) => {
     try {
       await invoke("delete_profile", { name });
-      if (get().activeProfile === name) set({ activeProfile: null });
-      await get().fetchProfiles();
+      const active = await invoke<string | null>("get_active_profile");
+      if (active && active !== get().activeProfile) await get().onProfileChanged(active);
+      else await get().fetchProfiles();
     } catch (e) {
       set({ error: String(e) });
     }
   },
 
-  addChannel: async (label, icon) => {
+  addChannel: async (label, icon, spatial = false) => {
     try {
-      await invoke("add_channel", { label, icon });
+      await invoke("add_channel", { label, icon, spatial, expectedProfile: get().activeProfile });
       // Buses too: the master (and auto-include mixes) absorb the channel.
       await Promise.all([get().fetchChannels(), get().fetchOutputs(), get().fetchBuses()]);
     } catch (e) {
@@ -617,7 +794,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
 
   addBus: async (label) => {
     try {
-      await invoke("add_bus", { label });
+      await invoke("add_bus", { label, expectedProfile: get().activeProfile });
       await get().fetchBuses();
     } catch (e) {
       set({ error: String(e) });
@@ -629,7 +806,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       buses: s.buses.map((b) => (b.name === name ? { ...b, label } : b)),
     }));
     try {
-      await invoke("rename_bus", { name, label });
+      await invoke("rename_bus", { name, label, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchBuses();
@@ -638,7 +815,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
 
   removeBus: async (name) => {
     try {
-      await invoke("remove_bus", { name });
+      await invoke("remove_bus", { name, expectedProfile: get().activeProfile });
       await get().fetchBuses();
     } catch (e) {
       set({ error: String(e) });
@@ -657,7 +834,11 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       ),
     }));
     try {
-      await invoke("set_bus_members", { name, channels });
+      await invoke("set_bus_members", {
+        name,
+        channels,
+        expectedProfile: get().activeProfile,
+      });
       // The backend converts against its own channel set - sync up so the
       // stored complement can't drift if channels changed mid-flight.
       await get().fetchBuses();
@@ -684,7 +865,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       }),
     }));
     try {
-      await invoke("set_bus_exclude", { name, exclude });
+      await invoke("set_bus_exclude", { name, exclude, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchBuses();
@@ -695,7 +876,11 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     set((s) => ({
       buses: s.buses.map((b) => (b.name === name ? { ...b, volume_percent: volume } : b)),
     }));
-    debouncedInvoke(`busvol:${name}`, "set_bus_volume", { name, volume }, (e) => {
+    debouncedInvoke(`busvol:${name}`, "set_bus_volume", {
+      name,
+      volume,
+      expectedProfile: get().activeProfile,
+    }, (e) => {
       set({ error: String(e) });
       void get().fetchBuses();
     });
@@ -706,7 +891,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       buses: s.buses.map((b) => (b.name === name ? { ...b, muted } : b)),
     }));
     try {
-      await invoke("set_bus_mute", { name, muted });
+      await invoke("set_bus_mute", { name, muted, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchBuses();
@@ -731,7 +916,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       channels: s.channels.map((c) => (c.name === sinkName ? { ...c, icon } : c)),
     }));
     try {
-      await invoke("set_channel_icon", { sinkName, icon });
+      await invoke("set_channel_icon", { sinkName, icon, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchChannels();
@@ -743,7 +928,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       channels: s.channels.map((c) => (c.name === sinkName ? { ...c, label } : c)),
     }));
     try {
-      await invoke("rename_channel", { sinkName, label });
+      await invoke("rename_channel", { sinkName, label, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchChannels();
@@ -766,7 +951,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   commitChannelOrder: async () => {
     const order = get().channels.map((c) => c.name);
     try {
-      await invoke("reorder_channels", { order });
+      await invoke("reorder_channels", { order, expectedProfile: get().activeProfile });
     } catch (e) {
       set({ error: String(e) });
       await get().fetchChannels();
@@ -775,7 +960,7 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
 
   removeChannel: async (sinkName) => {
     try {
-      await invoke("remove_channel", { sinkName });
+      await invoke("remove_channel", { sinkName, expectedProfile: get().activeProfile });
       await Promise.all([
         get().fetchChannels(),
         get().fetchAppStreams(),

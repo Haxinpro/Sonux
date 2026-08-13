@@ -38,7 +38,9 @@ export function ChannelProcessing({ channel }: Readonly<{ channel: VirtualSink }
     useMixerStore((s) => s.eqConfigs[channel.name] ?? null) ?? defaultEqConfig();
   const setChannelEq = useMixerStore((s) => s.setChannelEq);
   const isVoice = channel.name === "sink_chat";
-  const supportsSpatial = channel.name === "sink_game" || channel.name === "sink_media";
+  const supportsSpatial = channel.name === "sink_game"
+    || channel.name === "sink_media"
+    || channel.name.startsWith("sink_spatial_");
   const apply = (patch: Partial<EqConfig>) =>
     void setChannelEq(channel.name, { ...config, ...patch });
 

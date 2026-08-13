@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMixerStore } from "../../store/mixer";
 import type { BusDef } from "../../types";
 import { busMembers, MASTER_BUS, MAX_VOLUME } from "../../types";
-import { perceptual, volToDb } from "../../lib/audio";
+import { volToDb } from "../../lib/audio";
 import { Ms } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
 import { MenuCheckItem } from "../MenuItem";
@@ -37,13 +37,18 @@ function memberLabel(exclude: boolean, carried: number, all: number): string {
   return `all but ${all - carried}`;
 }
 
-export function BusStrip({ bus }: Readonly<{ bus: BusDef }>) {
+export function BusStrip({
+  bus,
+  onManageProfiles,
+}: Readonly<{
+  bus: BusDef;
+  onManageProfiles: () => void;
+}>) {
   const channels = useMixerStore((s) => s.channels);
   const setBusMembers = useMixerStore((s) => s.setBusMembers);
   const setBusExclude = useMixerStore((s) => s.setBusExclude);
   const renameBus = useMixerStore((s) => s.renameBus);
   const removeBus = useMixerStore((s) => s.removeBus);
-  const level = useMixerStore((s) => s.levels[bus.name]);
   const monitoring = useMixerStore((s) => s.monitors[bus.name] ?? false);
   const toggleMonitor = useMixerStore((s) => s.toggleMonitor);
   const setBusVolume = useMixerStore((s) => s.setBusVolume);
@@ -66,8 +71,6 @@ export function BusStrip({ bus }: Readonly<{ bus: BusDef }>) {
   // switches, and restarts (the backend re-applies them to the fresh node).
   const volume = bus.volume_percent;
   const muted = bus.muted;
-
-  const amplitude = Math.max(level?.[0] ?? 0, level?.[1] ?? 0);
 
   const applyVolume = (v: number) => void setBusVolume(bus.name, v);
   const toggleMute = () => void setBusMute(bus.name, !muted);
@@ -251,7 +254,7 @@ export function BusStrip({ bus }: Readonly<{ bus: BusDef }>) {
 
       <div className="strip-preset-slot">
         {isMaster ? (
-          <ProfileMenu compact />
+          <ProfileMenu compact onManageProfiles={onManageProfiles} />
         ) : (
           <div className="strip-preset-static">
             <Ms name="podcasts" />
@@ -262,7 +265,7 @@ export function BusStrip({ bus }: Readonly<{ bus: BusDef }>) {
 
       <div className="strip-body">
         <Fader value={volume} max={MAX_VOLUME} onChange={applyVolume} />
-        <VuMeter target={muted ? 0 : perceptual(amplitude)} />
+        <VuMeter source={bus.name} enabled={!muted} />
       </div>
 
       <div className="strip-readout">

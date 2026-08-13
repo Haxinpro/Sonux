@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// `sink_` prefix; Sink's own service nodes are excluded.
 pub fn is_virtual_sink(sink_name: &str) -> bool {
     sink_name.starts_with("sink_")
-        && !crate::persistence::channels::RESERVED_SINK_NAMES.contains(&sink_name)
+        && !crate::persistence::channels::is_reserved_sink_name(sink_name)
 }
 
 /// Infrastructure and desktop event streams are not useful application
@@ -284,6 +284,8 @@ pub struct AppStream {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MicClient {
     pub index: u32,
+    /// Processed microphone node this application is capturing.
+    pub mic_node: String,
     pub app_name: String,
     pub match_prop: String,
     pub match_value: String,
@@ -352,6 +354,9 @@ fn default_limiter_ceiling() -> f32 {
 /// Phase 3 mic chain configuration (persisted; applied live).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MicConfig {
+    /// Stable PipeWire node name. Older configs deserialize as the primary mic.
+    #[serde(default = "default_mic_node")]
+    pub node_name: String,
     pub enabled: bool,
     /// node.name of the hardware mic to capture (None = system default).
     pub input_device: Option<String>,
@@ -428,6 +433,7 @@ impl MicConfig {
 impl Default for MicConfig {
     fn default() -> Self {
         Self {
+            node_name: default_mic_node(),
             enabled: false,
             input_device: None,
             output_label: default_mic_label(),
@@ -445,6 +451,10 @@ impl Default for MicConfig {
             limiter_ceiling_db: default_limiter_ceiling(),
         }
     }
+}
+
+fn default_mic_node() -> String {
+    "sink_mic".to_string()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -531,6 +541,14 @@ mod mic_clamp_tests {
         let before = c.clone();
         c.clamp_ranges();
         assert_eq!(c, before);
+    }
+
+    #[test]
+    fn legacy_mic_config_defaults_to_primary_node() {
+        let mut value = serde_json::to_value(MicConfig::default()).expect("serializes");
+        value.as_object_mut().expect("object").remove("node_name");
+        let parsed: MicConfig = serde_json::from_value(value).expect("legacy config parses");
+        assert_eq!(parsed.node_name, "sink_mic");
     }
 }
 
@@ -646,7 +664,7 @@ fn default_spatial_distance() -> f32 {
 /// spatial audio is toggled; the insert below performs either HRTF
 /// virtualization or a standards-style stereo downmix.
 pub fn is_spatial_channel(name: &str) -> bool {
-    matches!(name, "sink_game" | "sink_media")
+    matches!(name, "sink_game" | "sink_media") || name.starts_with("sink_spatial_")
 }
 
 /// A channel's parametric EQ (persisted per channel; applied live).

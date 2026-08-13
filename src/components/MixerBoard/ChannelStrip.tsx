@@ -5,7 +5,7 @@ import { defaultEqConfig, MAX_VOLUME } from "../../types";
 import { channelAccentClass, channelIcon, Ms, ICON_CHOICES } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
 import { Popover } from "../Popover";
-import { perceptual, volToDb } from "../../lib/audio";
+import { volToDb } from "../../lib/audio";
 import { AppIcon } from "../AppList/AppIcon";
 import { ChannelApps } from "./ChannelApps";
 import { Fader } from "./Fader";
@@ -47,7 +47,6 @@ export function ChannelStrip({
 }: Readonly<ChannelStripProps>) {
   const setChannelVolume = useMixerStore((s) => s.setChannelVolume);
   const toggleMute = useMixerStore((s) => s.toggleMute);
-  const level = useMixerStore((s) => s.levels[channel.name]);
   const output = useMixerStore((s) => s.channelOutputs[channel.name] ?? null);
   const resolvedOutput = useMixerStore((s) => s.resolvedOutputs[channel.name] ?? null);
   const failover = useMixerStore((s) => s.channelFailover[channel.name] ?? true);
@@ -81,9 +80,6 @@ export function ChannelStrip({
       void renameChannel(channel.name, label);
     }
   };
-
-  // Mono meter: show the louder of L/R.
-  const amplitude = Math.max(level?.[0] ?? 0, level?.[1] ?? 0);
 
   const appsByKey = new Map<string, DraggableApp>();
   for (const app of appStreams) {
@@ -280,7 +276,7 @@ export function ChannelStrip({
           max={MAX_VOLUME}
           onChange={(v) => void setChannelVolume(channel.name, v)}
         />
-        <VuMeter target={channel.muted ? 0 : perceptual(amplitude)} />
+        <VuMeter source={channel.name} enabled={!channel.muted} />
       </div>
 
       <div className="strip-readout">

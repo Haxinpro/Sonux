@@ -25,6 +25,7 @@ export interface AppStream {
 /** An application currently recording from the processed virtual mic. */
 export interface MicClient {
   index: number;
+  mic_node: string;
   app_name: string;
   match_prop: string;
   match_value: string;
@@ -53,8 +54,13 @@ export interface OutputDevice {
   description: string;
 }
 
+/** Visual-only VU meter refresh policy; audio processing is unaffected. */
+export type MeterMode = "monitor" | "fps_144" | "fps_120" | "fps_100" | "fps_60" | "off";
+
 /** Phase 3 mic chain configuration (mirrors Rust MicConfig). */
 export interface MicConfig {
+  /** Stable PipeWire node name; sink_mic is the permanent primary. */
+  node_name: string;
   enabled: boolean;
   /** node.name of the hardware mic (null = system default). */
   input_device: string | null;
@@ -209,6 +215,39 @@ export function busMembers(bus: BusDef, allChannels: string[]): string[] {
 export interface ProfileInfo {
   name: string;
   trigger_device: string | null;
+  protected: boolean;
+}
+
+export interface ProfileContent {
+  channels: VirtualSink[];
+  mic: MicConfig;
+  secondary_mics: MicConfig[];
+}
+
+export interface ApplicationProfileRule {
+  executable: string;
+  path: string | null;
+  profile: string;
+  enabled: boolean;
+}
+
+export interface ProfileAutomationConfig {
+  enabled: boolean;
+  return_profile: string | null;
+  notifications: boolean;
+  rules: ApplicationProfileRule[];
+}
+
+export interface RunningApplication {
+  executable: string;
+  path: string;
+}
+
+export interface ProfileAutomationStatus {
+  automatic_profile: string | null;
+  matched_executable: string | null;
+  manual_override: boolean;
+  error: string | null;
 }
 
 /** Sent as sink_name to unassign a stream (backend moves it to the default sink). */

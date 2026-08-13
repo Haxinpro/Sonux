@@ -3,6 +3,7 @@ mod commands;
 mod error;
 mod mixer;
 mod persistence;
+mod profile_automation;
 mod state;
 
 // Narrow public surface for the dependency-free offline spatial comparison
@@ -101,6 +102,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state)
+        .manage(profile_automation::ProfileAutomationRuntime::default())
         .manage(window_size_saver())
         .invoke_handler(tauri::generate_handler![
             commands::devices::get_virtual_devices,
@@ -137,7 +139,11 @@ pub fn run() {
             commands::routing::rename_app,
             commands::routing::set_monitor,
             commands::mic::get_mic_config,
+            commands::mic::get_mic_configs,
             commands::mic::set_mic_config,
+            commands::mic::add_mic_channel,
+            commands::mic::remove_mic_channel,
+            commands::mic::reorder_mic_channels,
             commands::mic::get_input_devices,
             commands::mic::get_mic_clients,
             commands::mic::get_mic_test_status,
@@ -165,28 +171,46 @@ pub fn run() {
             commands::eq::import_eq_config,
             commands::eq::import_eq_file,
             commands::profiles::list_profiles,
+            commands::profiles::get_profile_content,
             commands::profiles::load_profile,
             commands::profiles::delete_profile,
             commands::profiles::set_profile_trigger,
             commands::profiles::create_blank_profile,
+            commands::profiles::copy_profile,
+            commands::profiles::rename_profile,
             commands::profiles::get_active_profile,
+            profile_automation::get_profile_automation,
+            profile_automation::save_profile_automation,
+            profile_automation::get_profile_automation_status,
+            profile_automation::list_running_applications,
             commands::settings::get_backend_info,
             commands::settings::get_autostart,
+            commands::settings::get_backup_status,
+            commands::settings::create_backup,
+            commands::settings::open_backup_location,
+            commands::settings::choose_backup_for_restore,
+            commands::settings::cancel_backup_restore,
+            commands::settings::restore_backup,
             commands::settings::set_autostart,
             commands::settings::get_default_devices,
             commands::settings::set_default_output,
             commands::settings::set_default_input,
             commands::settings::get_prefs,
             commands::settings::set_device_label_style,
+            commands::settings::set_meter_mode,
             commands::settings::set_onboarded,
             commands::settings::set_balance_channels,
             commands::settings::set_balance_visible,
             commands::settings::set_start_minimized,
+            commands::settings::set_multiple_mics,
             commands::settings::reset_app,
             commands::settings::restart_app,
         ])
         .setup(move |app| {
             build_tray(app)?;
+            app.state::<profile_automation::ProfileAutomationRuntime>()
+                .start(app.handle().clone());
+            spawn_background_app_router(app.handle().clone());
             // The window starts hidden (config) to avoid a flash; show it
             // now unless launched with --minimized (autostart-to-tray).
             let minimized = std::env::args().any(|a| a == "--minimized");
@@ -240,6 +264,45 @@ pub fn run() {
     }
 }
 
+/// Preserve application auto-routing while the window is minimized or hidden
+/// in the tray. The visible webview already requests the same snapshot for its
+/// app list, so this worker stays idle while the window is onscreen.
+fn spawn_background_app_router(handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut last_error = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let poll_in_background = handle
+                .get_webview_window("main")
+                .map(|w| {
+                    should_poll_app_routes_in_background(
+                        w.is_visible().unwrap_or(true),
+                        w.is_minimized().unwrap_or(false),
+                    )
+                })
+                .unwrap_or(false);
+            if !poll_in_background {
+                last_error = None;
+                continue;
+            }
+
+            let result = commands::devices::poll_app_streams(handle.state::<AppState>().inner());
+            match result {
+                Ok(_) => last_error = None,
+                Err(error) if last_error.as_deref() != Some(error.as_str()) => {
+                    eprintln!("sonux: background application routing failed: {error}");
+                    last_error = Some(error);
+                }
+                Err(_) => {}
+            }
+        }
+    });
+}
+
+fn should_poll_app_routes_in_background(visible: bool, minimized: bool) -> bool {
+    !visible || minimized
+}
+
 /// Streams per-channel peak levels to the UI at 10 Hz as `levels` events.
 /// Peaks are drained (read-and-reset), so silence decays to zero.
 fn spawn_level_emitter(handle: tauri::AppHandle, levels: Arc<LevelStore>) {
@@ -254,8 +317,15 @@ fn spawn_level_emitter(handle: tauri::AppHandle, levels: Arc<LevelStore>) {
                 .get_webview_window("main")
                 .map(|w| w.is_visible().unwrap_or(true) && !w.is_minimized().unwrap_or(false))
                 .unwrap_or(true);
-            if !onscreen {
-                // Force a fresh frame when the window returns.
+            let meters_enabled = handle
+                .state::<AppState>()
+                .lock_mixer()
+                .map(|mixer| mixer.prefs.meter_mode != persistence::prefs::MeterMode::Off)
+                .unwrap_or(true);
+            if !onscreen || !meters_enabled {
+                // Discard without serializing/emitting so a peak accumulated
+                // while suppressed cannot flash when visuals resume.
+                levels.discard_all();
                 prev_all_zero = false;
                 continue;
             }
@@ -386,4 +456,17 @@ fn build_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tray_routing_tests {
+    use super::should_poll_app_routes_in_background;
+
+    #[test]
+    fn background_router_runs_only_offscreen() {
+        assert!(!should_poll_app_routes_in_background(true, false));
+        assert!(should_poll_app_routes_in_background(false, false));
+        assert!(should_poll_app_routes_in_background(true, true));
+        assert!(should_poll_app_routes_in_background(false, true));
+    }
 }

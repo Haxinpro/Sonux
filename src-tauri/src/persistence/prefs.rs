@@ -18,11 +18,37 @@ pub enum DeviceLabelStyle {
     Prefix,
 }
 
+/// Visual refresh policy for the mixer VU meters. This never changes audio
+/// processing or routing; it only controls frontend rendering work.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MeterMode {
+    Monitor,
+    #[serde(rename = "fps_144")]
+    Fps144,
+    #[serde(rename = "fps_120")]
+    Fps120,
+    #[serde(rename = "fps_100")]
+    Fps100,
+    #[default]
+    #[serde(
+        rename = "fps_60",
+        alias = "high",
+        alias = "balanced",
+        alias = "low_power"
+    )]
+    Fps60,
+    Off,
+}
+
 /// App preferences, stored at `$XDG_CONFIG_HOME/sonux/prefs.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default)]
     pub device_label_style: DeviceLabelStyle,
+    /// Live meter animation rate. Every enabled rate sleeps at silence.
+    #[serde(default)]
+    pub meter_mode: MeterMode,
     /// First-run tutorial completed (false = show it on launch).
     #[serde(default)]
     pub onboarded: bool,
@@ -39,6 +65,9 @@ pub struct Prefs {
     /// showing the window (only meaningful with autostart enabled).
     #[serde(default)]
     pub start_minimized: bool,
+    /// Advanced opt-in: allow profiles to publish secondary processed mics.
+    #[serde(default)]
+    pub multiple_mics: bool,
 }
 
 fn default_true() -> bool {
@@ -49,11 +78,13 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             device_label_style: DeviceLabelStyle::default(),
+            meter_mode: MeterMode::default(),
             onboarded: false,
             balance_a: None,
             balance_b: None,
             show_balance: true,
             start_minimized: false,
+            multiple_mics: false,
         }
     }
 }
@@ -133,5 +164,37 @@ mod tests {
         // Unknown fields are tolerated; known fields still apply.
         let p = Prefs::parse(r#"{"device_label_style":"suffix","future_field":1}"#);
         assert_eq!(p.device_label_style, DeviceLabelStyle::Suffix);
+        assert_eq!(p.meter_mode, MeterMode::Fps60);
+    }
+
+    #[test]
+    fn meter_mode_round_trips_and_old_values_migrate_to_60_fps() {
+        let old = Prefs::parse(r#"{"onboarded":true}"#);
+        assert_eq!(old.meter_mode, MeterMode::Fps60);
+
+        let low = Prefs::parse(r#"{"meter_mode":"low_power"}"#);
+        assert_eq!(low.meter_mode, MeterMode::Fps60);
+        let high = Prefs::parse(r#"{"meter_mode":"high"}"#);
+        assert_eq!(high.meter_mode, MeterMode::Fps60);
+        let balanced = Prefs::parse(r#"{"meter_mode":"balanced"}"#);
+        assert_eq!(balanced.meter_mode, MeterMode::Fps60);
+
+        let monitor = Prefs::parse(r#"{"meter_mode":"monitor"}"#);
+        assert_eq!(monitor.meter_mode, MeterMode::Monitor);
+        let capped = Prefs::parse(r#"{"meter_mode":"fps_144"}"#);
+        assert_eq!(capped.meter_mode, MeterMode::Fps144);
+
+        let serialized = [
+            (MeterMode::Monitor, r#""monitor""#),
+            (MeterMode::Fps144, r#""fps_144""#),
+            (MeterMode::Fps120, r#""fps_120""#),
+            (MeterMode::Fps100, r#""fps_100""#),
+            (MeterMode::Fps60, r#""fps_60""#),
+            (MeterMode::Off, r#""off""#),
+        ];
+        for (mode, json) in serialized {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), json);
+            assert_eq!(serde_json::from_str::<MeterMode>(json).unwrap(), mode);
+        }
     }
 }

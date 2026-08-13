@@ -10,10 +10,12 @@ import {
 } from "../../store/shortcuts";
 import { useTheme, THEMES } from "../../store/theme";
 import { restartApplication } from "../../hooks/useGlobalShortcuts";
-import type { OutputDevice } from "../../types";
+import { stashRestoreWarning } from "../../lib/restoreWarning";
+import type { MeterMode, OutputDevice, ProfileAutomationConfig } from "../../types";
 import { Ms } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
 import { MenuItem } from "../MenuItem";
+import { Modal } from "../Modal";
 import { Popover } from "../Popover";
 import { ProcessingInfo } from "../ProcessingInfo";
 import { Toggle } from "../Toggle";
@@ -23,12 +25,79 @@ interface DefaultDevices {
   input: string | null;
 }
 
+interface BackupStatus {
+  count: number;
+  last_backup_at: number | null;
+}
+
+interface RestoreBackupResult {
+  frontend_state: Record<string, string>;
+  recovery_backup: string;
+  warning: string | null;
+}
+
+const BACKUP_FRONTEND_KEYS = [
+  "sonux-theme",
+  "sonux-global-shortcuts",
+  "sonux-active-eq-presets",
+  "sonux-profile-section-visibility",
+] as const;
+
+function frontendBackupState(): Record<string, string> {
+  return Object.fromEntries(BACKUP_FRONTEND_KEYS.flatMap((key) => {
+    const value = localStorage.getItem(key);
+    return value === null ? [] : [[key, value]];
+  }));
+}
+
+function applyFrontendBackupState(state: Record<string, string>) {
+  for (const key of BACKUP_FRONTEND_KEYS) {
+    localStorage.removeItem(key);
+  }
+  for (const [key, value] of Object.entries(state)) {
+    if ((BACKUP_FRONTEND_KEYS as readonly string[]).includes(key)) {
+      localStorage.setItem(key, value);
+    }
+  }
+}
+
+function backupStatusText(status: BackupStatus | null): string {
+  if (!status) return "Checking backups…";
+  if (status.count === 0 || status.last_backup_at === null) return "No backups yet";
+  const count = `${status.count} ${status.count === 1 ? "backup" : "backups"}`;
+  const created = new Date(status.last_backup_at * 1000);
+  const date = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(created);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(created);
+  return `${count} · Last backup: ${date} at ${time}`;
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 type LabelStyle = "plain" | "suffix" | "prefix";
 
 const LABEL_STYLES: { value: LabelStyle; label: string; example: string }[] = [
   { value: "plain", label: "Plain", example: "Game" },
   { value: "suffix", label: "Suffix", example: "Game (Sonux)" },
   { value: "prefix", label: "Prefix", example: "Sonux · Game" },
+];
+
+const METER_MODES: { value: MeterMode; label: string; detail: string }[] = [
+  { value: "monitor", label: "Monitor refresh rate", detail: "Match the display for the smoothest motion" },
+  { value: "fps_144", label: "144 FPS", detail: "Cap live meter animation at 144 FPS" },
+  { value: "fps_120", label: "120 FPS", detail: "Cap live meter animation at 120 FPS" },
+  { value: "fps_100", label: "100 FPS", detail: "Cap live meter animation at 100 FPS" },
+  { value: "fps_60", label: "60 FPS", detail: "Cap live meter animation at 60 FPS" },
+  { value: "off", label: "Off", detail: "Disable live meter visuals" },
 ];
 
 const SHORTCUT_ROWS: { action: ShortcutAction; label: string; icon: string }[] = [
@@ -109,15 +178,24 @@ export function SettingsScreen() {
   const [defaults, setDefaults] = useState<DefaultDevices>({ output: null, input: null });
   const [labelStyle, setLabelStyle] = useState<LabelStyle>("plain");
   const [labelStyleOpen, setLabelStyleOpen] = useState(false);
+  const [meterModeOpen, setMeterModeOpen] = useState(false);
+  const [profileAutomation, setProfileAutomation] = useState<ProfileAutomationConfig | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [confirmingMultipleMics, setConfirmingMultipleMics] = useState(false);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
+  const [backupBusy, setBackupBusy] = useState<"create" | "restore" | "open" | null>(null);
+  const [restorePath, setRestorePath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const outputDevices = useMixerStore((s) => s.outputDevices);
   const inputDevices = useMixerStore((s) => s.inputDevices);
-  const micConfig = useMixerStore((s) => s.micConfig);
-  const setMicConfig = useMixerStore((s) => s.setMicConfig);
+  const profiles = useMixerStore((s) => s.profiles);
   const replayOnboarding = useMixerStore((s) => s.replayOnboarding);
   const showBalance = useMixerStore((s) => s.showBalance);
   const setBalanceVisible = useMixerStore((s) => s.setBalanceVisible);
+  const multipleMics = useMixerStore((s) => s.multipleMics);
+  const setMultipleMics = useMixerStore((s) => s.setMultipleMics);
+  const meterMode = useMixerStore((s) => s.meterMode);
+  const setMeterMode = useMixerStore((s) => s.setMeterMode);
   const shortcutsEnabled = useShortcutSettings((s) => s.enabled);
   const shortcutBindings = useShortcutSettings((s) => s.bindings);
   const setShortcutsEnabled = useShortcutSettings((s) => s.setEnabled);
@@ -128,6 +206,8 @@ export function SettingsScreen() {
     void invoke<boolean>("get_autostart").then(setAutostart);
     void invoke<{ native: boolean }>("get_backend_info").then((i) => setBackendNative(i.native));
     void invoke<DefaultDevices>("get_default_devices").then(setDefaults).catch(() => {});
+    void invoke<ProfileAutomationConfig>("get_profile_automation").then(setProfileAutomation).catch(() => {});
+    void invoke<BackupStatus>("get_backup_status").then(setBackupStatus).catch(() => {});
     void invoke<{ device_label_style: LabelStyle; start_minimized: boolean }>("get_prefs")
       .then((p) => {
         setLabelStyle(p.device_label_style);
@@ -180,6 +260,71 @@ export function SettingsScreen() {
     }
   };
 
+  const saveProfileAutomation = async (next: ProfileAutomationConfig) => {
+    try {
+      await invoke("save_profile_automation", { config: next });
+      setProfileAutomation(next);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const createBackup = async () => {
+    setBackupBusy("create");
+    try {
+      const status = await invoke<BackupStatus>("create_backup", {
+        frontendState: frontendBackupState(),
+      });
+      setBackupStatus(status);
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const chooseBackup = async () => {
+    try {
+      const selected = await invoke<string | null>("choose_backup_for_restore");
+      if (selected) setRestorePath(selected);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+
+  const restoreBackup = async () => {
+    setBackupBusy("restore");
+    try {
+      const restored = await invoke<RestoreBackupResult>("restore_backup", {
+        frontendState: frontendBackupState(),
+      });
+      applyFrontendBackupState(restored.frontend_state);
+      // A peripheral restore warning must not leave the old in-memory mixer
+      // running against the newly replaced config tree. Carry the warning
+      // across the mandatory restart and show it in the fresh process.
+      stashRestoreWarning(restored.warning);
+      await invoke("restart_app");
+    } catch (reason) {
+      setError(String(reason));
+      setBackupBusy(null);
+      void invoke<BackupStatus>("get_backup_status").then(setBackupStatus).catch(() => {});
+    }
+  };
+
+  const openBackupLocation = async () => {
+    setBackupBusy("open");
+    try {
+      await invoke("open_backup_location");
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
   return (
     <div className="content narrow">
       <div className="screen-head">
@@ -215,6 +360,39 @@ export function SettingsScreen() {
                   <span className="theme-swatch-label">{t.label}</span>
                 </button>
               ))}
+            </div>
+          </div>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="speed" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Live meter refresh rate</div>
+              <div className="rsub">
+                Mixer tab only, while it is open. {METER_MODES.find((option) => option.value === meterMode)?.detail}.
+                {meterMode !== "off" && " Higher refresh rates use more CPU."}
+              </div>
+            </div>
+            <div style={{ position: "relative" }}>
+              <button type="button" className="select" onClick={() => setMeterModeOpen((open) => !open)}>
+                <span>{METER_MODES.find((option) => option.value === meterMode)?.label}</span>
+                <Ms name="expand_more" />
+              </button>
+              <Popover open={meterModeOpen} onClose={() => setMeterModeOpen(false)} side="bottom" align="end">
+                {METER_MODES.map((option) => (
+                  <MenuItem
+                    key={option.value}
+                    selected={option.value === meterMode}
+                    showCheck
+                    onClick={() => {
+                      void setMeterMode(option.value);
+                      setMeterModeOpen(false);
+                    }}
+                  >
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Popover>
             </div>
           </div>
         </div>
@@ -262,28 +440,35 @@ export function SettingsScreen() {
           <DeviceRow
             icon="mic"
             title="Default input"
-            sub="The microphone the Sonux mic chain captures"
+            sub="System microphone used when a profile follows the default input"
             devices={inputDevices}
             current={defaults.input}
             onPick={(name) => void pickDefault("input", name)}
           />
           <div className="row">
             <div className="ricon">
-              <Ms name="settings_voice" />
+              <Ms name="mic_external_on" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Enable processed microphone</div>
-              <div className="rsub">
-                Publish the Sonux virtual mic and run its capture and processing chain
-              </div>
+              <div className="rtitle">Multiple microphone channels</div>
+              <div className="rsub">Advanced · publish separate processed microphones for applications</div>
             </div>
-            {micConfig && (
-              <Toggle
-                on={micConfig.enabled}
-                onClick={() => void setMicConfig({ enabled: !micConfig.enabled })}
-              />
-            )}
+            <Toggle
+              on={multipleMics}
+              onClick={() => {
+                if (multipleMics) void setMultipleMics(false);
+                else setConfirmingMultipleMics(true);
+              }}
+            />
           </div>
+          {multipleMics && (
+            <div className="mic-tip settings-mic-tip">
+              <Ms name="warning" />
+              <span>
+                One virtual microphone is recommended for most setups. Add another only when an application or production workflow needs an independently processed input.
+              </span>
+            </div>
+          )}
           <div className="row">
             <div className="ricon">
               <Ms name="balance" />
@@ -319,6 +504,75 @@ export function SettingsScreen() {
               />
             </div>
           )}
+        </div>
+
+        <div className="section-label">Automatic profile activation</div>
+        <div className="card" style={{ padding: "var(--sp-2)" }}>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="automation" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Enable automatic activation</div>
+              <div className="rsub">Activate profiles when their linked games or applications start</div>
+            </div>
+            {profileAutomation && (
+              <div className="processing-card-head-actions">
+                <Toggle
+                  on={profileAutomation.enabled}
+                  onClick={() => void saveProfileAutomation({ ...profileAutomation, enabled: !profileAutomation.enabled })}
+                />
+                <ProcessingInfo
+                  label="How profile switching works"
+                  text="When a linked application starts, Sonux activates its profile. If several linked applications run, the newest one takes priority. Selecting a profile manually overrides automation until the matched application closes."
+                />
+              </div>
+            )}
+          </div>
+          <div className={`row automation-dependent-setting${profileAutomation?.enabled ? "" : " disabled"}`}>
+            <div className="ricon">
+              <Ms name="restore" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">After linked applications close</div>
+              <div className="rsub">Choose which profile Sonux should use next</div>
+            </div>
+            {profileAutomation && (
+              <select
+                className="select automation-settings-select"
+                disabled={!profileAutomation.enabled}
+                value={profileAutomation.return_profile ?? ""}
+                onChange={(event) => void saveProfileAutomation({
+                  ...profileAutomation,
+                  return_profile: event.target.value || null,
+                })}
+              >
+                <option value="">Restore the previous profile</option>
+                {profiles.map((profile) => (
+                  <option key={profile.name} value={profile.name}>Return to {profile.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div className={`row automation-dependent-setting${profileAutomation?.enabled ? "" : " disabled"}`}>
+            <div className="ricon">
+              <Ms name="notifications" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Profile switch notifications</div>
+              <div className="rsub">Show a desktop notification when Sonux changes profiles automatically</div>
+            </div>
+            {profileAutomation && (
+              <Toggle
+                on={profileAutomation.notifications}
+                disabled={!profileAutomation.enabled}
+                onClick={() => void saveProfileAutomation({
+                  ...profileAutomation,
+                  notifications: !profileAutomation.notifications,
+                })}
+              />
+            )}
+          </div>
         </div>
 
         <div className="section-label">Global shortcuts</div>
@@ -379,6 +633,61 @@ export function SettingsScreen() {
               onClick={() => setShortcutBindings({ ...DEFAULT_SHORTCUTS })}
             >
               Restore defaults
+            </button>
+          </div>
+        </div>
+
+        <div className="section-label">Backups</div>
+        <div className="card" style={{ padding: "var(--sp-2)" }}>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="backup" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Manual backups</div>
+              <div className="rsub">{backupStatusText(backupStatus)}</div>
+            </div>
+            <button
+              type="button"
+              className="select"
+              disabled={backupBusy !== null}
+              onClick={() => void createBackup()}
+            >
+              <span>{backupBusy === "create" ? "Creating…" : "Create backup"}</span>
+            </button>
+          </div>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="folder_open" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Backup location</div>
+              <div className="rsub">Backups remain there until you delete them</div>
+            </div>
+            <button
+              type="button"
+              className="select"
+              disabled={backupBusy !== null}
+              onClick={() => void openBackupLocation()}
+            >
+              <span>Open backup location</span>
+            </button>
+          </div>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="restore_page" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">Restore backup</div>
+              <div className="rsub">Creates an automatic recovery backup first</div>
+            </div>
+            <button
+              type="button"
+              className="select"
+              disabled={backupBusy !== null}
+              onClick={() => void chooseBackup()}
+            >
+              <span>Restore backup…</span>
             </button>
           </div>
         </div>
@@ -450,6 +759,40 @@ export function SettingsScreen() {
           </div>
         </div>
       </div>
+      <Modal open={confirmingMultipleMics} onClose={() => setConfirmingMultipleMics(false)} title="Enable multiple microphones?">
+        <p className="modal-text">
+          Most users should publish only one virtual microphone. Multiple channels capture and process audio independently and can make device lists and application setup more complex.
+        </p>
+        <p className="modal-text">Enable this only when you need separate processed inputs, alternate processing, or production stems.</p>
+        <div className="modal-btns">
+          <button
+            type="button"
+            className="modal-btn primary"
+            onClick={() => {
+              setConfirmingMultipleMics(false);
+              void setMultipleMics(true);
+            }}
+          >
+            Enable advanced feature
+          </button>
+          <button type="button" className="modal-btn" onClick={() => setConfirmingMultipleMics(false)}>Cancel</button>
+        </div>
+      </Modal>
+
+      <ConfirmModal
+        open={restorePath !== null}
+        onClose={() => setRestorePath(null)}
+        onCancel={() => {
+          void invoke("cancel_backup_restore").catch((reason) => setError(String(reason)));
+        }}
+        title={`Restore ${restorePath ? `“${fileName(restorePath)}”` : "backup"}?`}
+        confirmLabel="Restore and restart"
+        onConfirm={() => {
+          if (restorePath) void restoreBackup();
+        }}
+      >
+        Your current Sonux setup will be replaced. Before restoring, Sonux will save it as a clearly labelled Automatic Recovery Backup, then restart.
+      </ConfirmModal>
 
       <ConfirmModal
         open={confirmingReset}

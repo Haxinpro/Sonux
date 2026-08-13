@@ -36,6 +36,19 @@ const TEST_IDLE: u8 = 0;
 const TEST_RECORDING: u8 = 1;
 const TEST_LOOPING: u8 = 2;
 const TEST_ONCE: u8 = 3;
+/// Maximum interleaved samples decoded at once by the RT capture callback.
+/// Divisible by both supported channel counts (stereo and 7.1).
+const CAPTURE_CHUNK_SAMPLES: usize = 8192;
+
+fn decode_f32_chunk(bytes: &[u8], output: &mut Vec<f32>) {
+    debug_assert!(bytes.len() / 4 <= output.capacity());
+    output.clear();
+    output.extend(
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])),
+    );
+}
 
 /// Lock-free channel recorder owned by an EQ insert. It taps `input` before
 /// spatial/EQ processing and substitutes saved samples at the same point.
@@ -314,6 +327,20 @@ mod tests {
         assert!(!test.status().playing);
         assert!(!test.status().has_recording);
     }
+
+    #[test]
+    fn oversized_capture_is_decoded_without_growing_rt_storage() {
+        let bytes = vec![0u8; CAPTURE_CHUNK_SAMPLES * 4 * 3];
+        let mut decoded = Vec::with_capacity(CAPTURE_CHUNK_SAMPLES);
+        let original_capacity = decoded.capacity();
+        let mut samples = 0;
+        for chunk in bytes.chunks(CAPTURE_CHUNK_SAMPLES * 4) {
+            decode_f32_chunk(chunk, &mut decoded);
+            samples += decoded.len();
+            assert_eq!(decoded.capacity(), original_capacity);
+        }
+        assert_eq!(samples, CAPTURE_CHUNK_SAMPLES * 3);
+    }
 }
 
 /// Interleaved F32 format pod for stream negotiation. Game/Media use the
@@ -401,8 +428,8 @@ impl EqChainHandle {
                 engine: EqEngine::new(48000.0),
                 params: params.clone(),
                 ring: ring.clone(),
-                input: Vec::with_capacity(8192),
-                scratch: Vec::with_capacity(4096),
+                input: Vec::with_capacity(CAPTURE_CHUNK_SAMPLES),
+                scratch: Vec::with_capacity(CAPTURE_CHUNK_SAMPLES),
                 spatial,
                 test: test.clone(),
             })
@@ -429,32 +456,33 @@ impl EqChainHandle {
                 let valid = data.chunk().size() as usize;
                 let Some(bytes) = data.data() else { return };
 
-                let n = (valid.min(bytes.len())) / 4;
-                ctx.input.clear();
-                ctx.input.extend(
-                    bytes[..n * 4]
-                        .chunks_exact(4)
-                        .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])),
-                );
-
-                ctx.test.process_raw(&mut ctx.input);
-
-                if let Some(spatial) = &mut ctx.spatial {
-                    let (enabled, tuning, distance, headphones) = ctx.params.spatial_snapshot();
-                    spatial.process(
-                        &ctx.input,
-                        &mut ctx.scratch,
-                        super::spatial::SpatialRenderParams::new(
-                            enabled, tuning, distance, headphones,
-                        ),
-                    );
+                let input_channels = if ctx.spatial.is_some() {
+                    SURROUND_CHANNELS
                 } else {
-                    ctx.scratch.clear();
-                    ctx.scratch.extend_from_slice(&ctx.input);
+                    2
+                };
+                let samples = (valid.min(bytes.len()) / 4) / input_channels * input_channels;
+                for chunk in bytes[..samples * 4].chunks(CAPTURE_CHUNK_SAMPLES * 4) {
+                    decode_f32_chunk(chunk, &mut ctx.input);
+                    ctx.test.process_raw(&mut ctx.input);
+
+                    if let Some(spatial) = &mut ctx.spatial {
+                        let (enabled, tuning, distance, headphones) = ctx.params.spatial_snapshot();
+                        spatial.process(
+                            &ctx.input,
+                            &mut ctx.scratch,
+                            super::spatial::SpatialRenderParams::new(
+                                enabled, tuning, distance, headphones,
+                            ),
+                        );
+                    } else {
+                        ctx.scratch.clear();
+                        ctx.scratch.extend_from_slice(&ctx.input);
+                    }
+                    ctx.engine
+                        .process_interleaved(&mut ctx.scratch, &ctx.params);
+                    ctx.ring.push(&ctx.scratch);
                 }
-                ctx.engine
-                    .process_interleaved(&mut ctx.scratch, &ctx.params);
-                ctx.ring.push(&ctx.scratch);
             })
             .register()
             .map_err(|e| err("capture listener", e))?;

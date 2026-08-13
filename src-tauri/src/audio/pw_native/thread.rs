@@ -19,7 +19,7 @@ use pw::types::ObjectType;
 use crate::audio::pw_native::eq_chain::EqChainHandle;
 use crate::audio::pw_native::levels::LevelStore;
 use crate::audio::pw_native::meter::MeterHandle;
-use crate::audio::pw_native::mic::{MicStreams, MIC_NODE};
+use crate::audio::pw_native::mic::{is_mic_node, MicStreams};
 use crate::audio::pw_native::pods;
 use crate::audio::pw_native::test_tone::SpatialTestHandle;
 use crate::audio::types::{
@@ -39,6 +39,21 @@ const VIRTUAL_SOURCE_CLASS: &str = "Audio/Source/Virtual";
 pub const INTERNAL_PREFIX: &str = "sink-internal-";
 /// node.name prefix of our meter capture streams.
 pub const METER_PREFIX: &str = "sink-internal-meter-";
+
+fn is_routable_output(media_class: &str, managed: bool) -> bool {
+    media_class == SINK_CLASS && !managed
+}
+
+fn is_routable_input(media_class: &str, name: Option<&str>) -> bool {
+    (media_class == SOURCE_CLASS || media_class == VIRTUAL_SOURCE_CLASS)
+        && !name.is_some_and(is_mic_node)
+        && !name.is_some_and(is_bus_name)
+}
+
+fn is_controllable_app_stream(media_class: &str, props: &HashMap<String, String>) -> bool {
+    media_class == STREAM_CLASS
+        && !crate::audio::types::should_hide_app(|key| props.get(key).cloned())
+}
 
 type Reply<T> = mpsc::Sender<Result<T, SinkError>>;
 /// A set of live links: (output port, input port, proxy).
@@ -129,7 +144,19 @@ pub enum Cmd {
         config: MicConfig,
         reply: Reply<()>,
     },
+    /// Cancel a mic create whose readiness reply timed out at the facade.
+    CancelPendingMic {
+        node_name: String,
+        reply: Reply<()>,
+    },
+    /// Acknowledge that the facade received the readiness result. Until this
+    /// arrives, the previous config remains available to a timeout cancel.
+    FinalizePendingMic {
+        node_name: String,
+        reply: Reply<()>,
+    },
     MicTest {
+        node_name: String,
         action: MicTestAction,
         reply: Reply<MicTestStatus>,
     },
@@ -225,15 +252,18 @@ struct State {
     /// device (or the exact default) and stay silent when it's gone. Absence
     /// (the default) means failover is on.
     channel_strict: std::collections::HashSet<String>,
-    /// Phase 3 mic chain.
-    mic_config: MicConfig,
-    /// Proxy for the sink_mic virtual source (kept alive while enabled).
-    mic_source: Option<Node>,
+    /// Processed microphone chains, keyed by their stable virtual node name.
+    mic_configs: HashMap<String, MicConfig>,
+    /// Virtual source proxies, keyed by mic node name.
+    mic_sources: HashMap<String, Node>,
     /// Mic-node removals we caused ourselves (a rename recreates the node), so
     /// the heal path can tell them from an external destroy and only recreate
     /// for the latter.
-    mic_expected_removals: u32,
-    mic_streams: Option<MicStreams>,
+    mic_expected_removals: HashMap<String, u32>,
+    /// Previous config for a mic create/recreate request awaiting its global.
+    /// Used to restore the working chain if the new source cannot attach.
+    pending_mic_previous: HashMap<String, MicConfig>,
+    mic_streams: HashMap<String, MicStreams>,
     levels: Option<Arc<LevelStore>>,
     /// Mix buses we own: node name -> proxy.
     bus_sources: HashMap<String, Node>,
@@ -247,8 +277,8 @@ struct State {
     /// this separate means Stop never disables a monitor the user enabled.
     test_auditions: std::collections::HashSet<String>,
     monitor_links: HashMap<String, LinkSet>,
-    /// Links from the mic playback stream into the virtual mic.
-    mic_links: LinkSet,
+    /// Links from each mic playback stream into its virtual mic.
+    mic_links: HashMap<String, LinkSet>,
     /// Per-channel EQ configs (source of truth for chain (re)creation -
     /// kept even while disabled so re-enabling restores the bands).
     eq_configs: HashMap<String, EqConfig>,
@@ -268,9 +298,9 @@ struct State {
 impl State {
     /// Live node id of the mic playback stream. Resolved lazily - the id
     /// is only valid once the server has created the stream's node.
-    fn mic_playback_node(&self) -> Option<u32> {
+    fn mic_playback_node(&self, name: &str) -> Option<u32> {
         self.mic_streams
-            .as_ref()
+            .get(name)
             .map(|m| m.playback_node_id())
             .filter(|id| *id != u32::MAX)
     }
@@ -292,10 +322,32 @@ fn resolve_source(eq_playback: Option<u32>, channel_id: u32) -> u32 {
 }
 
 impl State {
+    /// True only for a channel this backend was explicitly asked to own.
+    /// Names alone are not an ownership boundary: another client may create
+    /// an unrelated node whose name happens to begin with `sink_`.
+    fn is_managed_channel(&self, name: &str) -> bool {
+        self.desired.get(name).is_some_and(|(_, kind)| *kind == 0)
+    }
+
+    /// True only for a mix source created and retained by this backend.
+    fn is_managed_bus(&self, name: &str) -> bool {
+        self.desired.get(name).is_some_and(|(_, kind)| *kind == 1)
+            && self.bus_sources.contains_key(name)
+    }
+
+    fn is_managed_control_node(&self, name: &str) -> bool {
+        self.is_managed_channel(name) || self.is_managed_bus(name)
+    }
+
     fn node_by_name(&self, name: &str) -> Option<&NodeEntry> {
         self.nodes
             .values()
             .find(|n| n.props.get("node.name").map(String::as_str) == Some(name))
+    }
+
+    fn is_routable_input_name(&self, name: &str) -> bool {
+        self.node_by_name(name)
+            .is_some_and(|node| is_routable_input(&node.media_class, Some(name)))
     }
 
     /// The sink a stream is currently connected to, resolved through links.
@@ -397,14 +449,16 @@ fn setup_and_run(
                             // the expected-removals counter can.
                             let already_back = match kind {
                                 2 => {
-                                    if s.mic_expected_removals > 0 {
-                                        s.mic_expected_removals -= 1;
+                                    let expected =
+                                        s.mic_expected_removals.entry(name.clone()).or_default();
+                                    if *expected > 0 {
+                                        *expected -= 1;
                                         true
                                     } else {
                                         // External destroy (wpctl, a session
                                         // hiccup): drop the dead proxy so the
                                         // recreate below isn't blocked by it.
-                                        s.mic_source = None;
+                                        s.mic_sources.remove(&name);
                                         false
                                     }
                                 }
@@ -437,14 +491,16 @@ fn setup_and_run(
                                         1 => {
                                             s.bus_sources.insert(name, proxy);
                                         }
-                                        _ => s.mic_source = Some(proxy),
+                                        _ => {
+                                            s.mic_sources.insert(name, proxy);
+                                        }
                                     }
                                 }
                                 Err(e) => eprintln!("sonux: recreate {name} failed: {e}"),
                             }
                         }
                         ensure_all_links(&state);
-                        ensure_mic_links(&state);
+                        ensure_all_mic_links(&state);
                     }
                     Heal::Relink => ensure_all_links(&state),
                     Heal::Nothing => {}
@@ -493,7 +549,7 @@ fn on_global(
             // stream nodes (EQ/mic playback streams), so reconcile on every
             // port event - both are idempotent no-ops until both ends exist.
             ensure_all_links(state);
-            ensure_mic_links(state);
+            ensure_all_mic_links(state);
         }
         ObjectType::Link => {
             let Some(props) = global.props else { return };
@@ -507,10 +563,11 @@ fn on_global(
                     // session-manager fallback) links it somewhere other
                     // than the virtual mic, destroy that link - mic audio
                     // must never leak into the speakers.
-                    let mic_stray = match (s.mic_playback_node(), s.node_by_name(MIC_NODE)) {
-                        (Some(playback), mic) if out == playback => mic.map(|n| n.id) != Some(inp),
-                        _ => false,
-                    };
+                    let mic_stray = s.mic_streams.keys().any(|name| {
+                        s.mic_playback_node(name)
+                            .is_some_and(|playback| playback == out)
+                            && s.node_by_name(name).map(|node| node.id) != Some(inp)
+                    });
                     // Same policing for EQ playback streams: only the links
                     // the loop planned (device/buses/monitor) may exist. An
                     // EQ node with no plan yet (chain just built, first
@@ -572,14 +629,28 @@ fn on_global(
                             // A follow-default mic chain is pinned to the
                             // resolved device (dont-reconnect), so it
                             // tracks default changes by rebuilding.
-                            changed
-                                && s.mic_config.enabled
-                                && s.mic_config.input_device.is_none()
-                                && s.mic_streams.is_some()
+                            if !changed {
+                                Vec::new()
+                            } else {
+                                s.mic_configs
+                                    .iter()
+                                    .filter(|(mic_name, config)| {
+                                        config.enabled
+                                            && config.input_device.is_none()
+                                            && s.mic_streams.contains_key(*mic_name)
+                                    })
+                                    .map(|(mic_name, _)| mic_name.clone())
+                                    .collect()
+                            }
                         };
-                        if rebuild {
-                            state_m.borrow_mut().mic_streams = None;
-                            build_mic_streams(&state_m);
+                        for mic_name in rebuild {
+                            let config = state_m.borrow().mic_configs.get(&mic_name).cloned();
+                            if let Some(config) = config {
+                                if let Err(error) = build_mic_streams(&state_m, &mic_name, &config)
+                                {
+                                    eprintln!("sonux: rebuild mic {mic_name} failed: {error}");
+                                }
+                            }
                         }
                     }
                     0
@@ -684,7 +755,7 @@ fn on_node(
     let mut s = state.borrow_mut();
     s.nodes.insert(global.id, entry);
 
-    if media_class == SINK_CLASS && is_virtual_sink(&node_name) {
+    if media_class == SINK_CLASS && s.is_managed_channel(&node_name) {
         // A virtual sink came up: resolve pending create requests, remember
         // it for teardown if we didn't create it, and attach a level meter.
         if let Some(waiters) = s.pending_creates.remove(&node_name) {
@@ -728,14 +799,46 @@ fn on_node(
     }
 
     // The virtual mic source came up: attach the DSP streams.
-    if media_class == VIRTUAL_SOURCE_CLASS && node_name == MIC_NODE {
+    if media_class == VIRTUAL_SOURCE_CLASS && s.mic_configs.contains_key(&node_name) {
+        let config = s.mic_configs.get(&node_name).cloned();
         drop(s);
-        build_mic_streams(state);
+        let result = match config {
+            Some(config) if !state.borrow().mic_streams.contains_key(&node_name) => {
+                build_mic_streams(state, &node_name, &config)
+            }
+            _ => Ok(()),
+        };
+        if result.is_err() {
+            rollback_pending_mic(state, &node_name, core);
+        }
+        let mut delivered = false;
+        if let Some(waiters) = state.borrow_mut().pending_creates.remove(&node_name) {
+            for reply in waiters {
+                let response = match &result {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(SinkError::Config(error.to_string())),
+                };
+                delivered |= reply.send(response).is_ok();
+            }
+        }
+        if result.is_ok() && !delivered {
+            // The facade timed out and dropped its receiver. Do not let a
+            // registry event that arrived just afterward commit silently.
+            rollback_pending_mic(state, &node_name, core);
+        }
+        if let Err(error) = result {
+            eprintln!("sonux: mic chain for {node_name} failed: {error}");
+        }
         return;
     }
 
     // A mix bus came up: meter it (direct source capture) and link members.
-    if media_class == VIRTUAL_SOURCE_CLASS && is_bus_name(&node_name) {
+    if media_class == VIRTUAL_SOURCE_CLASS && s.is_managed_bus(&node_name) {
+        if let Some(waiters) = s.pending_creates.remove(&node_name) {
+            for reply in waiters {
+                let _ = reply.send(Ok(()));
+            }
+        }
         if !s.meters.contains_key(&node_name) {
             match MeterHandle::new(core, &node_name, global.id, levels.clone(), false) {
                 Ok(meter) => {
@@ -758,56 +861,110 @@ fn on_node(
 
 /// (Re)build the mic capture/DSP/playback streams. The loop links the
 /// playback stream to the virtual source by name, so no id is needed.
-fn build_mic_streams(state: &Rc<RefCell<State>>) {
-    let Some(core) = CORE.with(|c| c.borrow().clone()) else {
-        return;
-    };
-    let mut s = state.borrow_mut();
-    if !s.mic_config.enabled {
-        return;
+fn build_mic_streams(
+    state: &Rc<RefCell<State>>,
+    node_name: &str,
+    config: &MicConfig,
+) -> Result<(), SinkError> {
+    let core = CORE
+        .with(|c| c.borrow().clone())
+        .ok_or_else(|| SinkError::Config("core is gone".into()))?;
+    if !config.enabled {
+        return Ok(());
     }
+    let s = state.borrow();
     // Resolve "follow default" to the actual hardware source at build
     // time - the capture must be pinned (and must never point at our own
     // virtual mic, or the chain would eat its own output).
-    let mic_target = s.mic_config.input_device.clone().or_else(|| {
-        s.default_source_name
-            .clone()
-            .filter(|name| name != MIC_NODE)
-    });
-    let Some(levels) = s.levels.clone() else {
-        return;
-    };
-    match MicStreams::new(&core, &s.mic_config, mic_target.as_deref(), levels) {
-        Ok(streams) => {
-            s.mic_links.clear();
-            s.mic_streams = Some(streams);
+    let mic_target = match config.input_device.as_deref() {
+        Some(name) if s.is_routable_input_name(name) => Some(name.to_string()),
+        Some(name) => {
+            return Err(SinkError::Config(format!(
+                "configured microphone input is unavailable: {name}"
+            )));
         }
-        Err(e) => eprintln!("sonux: mic chain failed: {e}"),
-    }
+        None => s
+            .default_source_name
+            .clone()
+            .filter(|name| s.is_routable_input_name(name)),
+    };
+    let levels = s
+        .levels
+        .clone()
+        .ok_or_else(|| SinkError::Config("meter storage is unavailable".into()))?;
     drop(s);
-    ensure_mic_links(state);
+    let streams = MicStreams::new(&core, config, node_name, mic_target.as_deref(), levels)?;
+    let mut s = state.borrow_mut();
+    s.mic_links.remove(node_name);
+    s.mic_streams.insert(node_name.to_string(), streams);
+    drop(s);
+    ensure_mic_links(state, node_name);
+    Ok(())
+}
+
+/// Restore the configuration that preceded an asynchronous mic create.
+/// This is used both when DSP construction fails and when the caller has
+/// already timed out and dropped its readiness receiver.
+fn rollback_pending_mic(state: &Rc<RefCell<State>>, node_name: &str, core: &CoreRc) -> bool {
+    let mut s = state.borrow_mut();
+    let Some(previous) = s.pending_mic_previous.remove(node_name) else {
+        return false;
+    };
+    s.mic_configs
+        .insert(node_name.to_string(), previous.clone());
+    if let Some(streams) = s.mic_streams.get(node_name) {
+        streams.params.apply(&previous);
+    }
+    if previous.enabled {
+        s.desired
+            .insert(node_name.to_string(), (previous.output_label.clone(), 2));
+    } else {
+        s.desired.remove(node_name);
+        s.mic_streams.remove(node_name);
+        s.mic_links.remove(node_name);
+    }
+    if let Some(proxy) = s.mic_sources.remove(node_name) {
+        let _ = core.destroy_object(proxy);
+    }
+    true
 }
 
 /// Link the mic playback stream's output ports into the virtual mic.
 /// Called whenever ports appear; idempotent.
-fn ensure_mic_links(state: &Rc<RefCell<State>>) {
+fn ensure_mic_links(state: &Rc<RefCell<State>>, node_name: &str) {
     let Some(core) = CORE.with(|c| c.borrow().clone()) else {
         return;
     };
     let mut s = state.borrow_mut();
     let (Some(playback_id), Some(mic_node)) = (
-        s.mic_playback_node(),
-        s.node_by_name(MIC_NODE).map(|n| n.id),
+        s.mic_playback_node(node_name),
+        s.node_by_name(node_name).map(|n| n.id),
     ) else {
         return;
     };
     let pairs = desired_pairs(&s, playback_id, mic_node);
-    let current: Vec<(u32, u32)> = s.mic_links.iter().map(|(o, i, _)| (*o, *i)).collect();
+    let current: Vec<(u32, u32)> = s
+        .mic_links
+        .get(node_name)
+        .into_iter()
+        .flatten()
+        .map(|(o, i, _)| (*o, *i))
+        .collect();
     if current == pairs || pairs.is_empty() {
         return;
     }
-    s.mic_links.clear();
-    s.mic_links = create_links(&core, "mic", playback_id, mic_node, &pairs);
+    s.mic_links.remove(node_name);
+    s.mic_links.insert(
+        node_name.to_string(),
+        create_links(&core, node_name, playback_id, mic_node, &pairs),
+    );
+}
+
+fn ensure_all_mic_links(state: &Rc<RefCell<State>>) {
+    let names: Vec<String> = state.borrow().mic_configs.keys().cloned().collect();
+    for name in names {
+        ensure_mic_links(state, &name);
+    }
 }
 
 /// Compute monitor→input port pairs from `channel_id`'s output ports to
@@ -854,13 +1011,13 @@ fn desired_pairs(s: &State, channel_id: u32, target_id: u32) -> Vec<(u32, u32)> 
         .collect()
 }
 
-/// Highest-`priority.session` non-virtual sink from `(id, node.name, priority)`
+/// Highest-`priority.session` unmanaged sink from `(id, is_managed, priority)`
 /// candidates. Pure (plain tuples) so the failover choice is unit-testable,
 /// and it reuses WirePlumber's own scoring so Sink's fallback matches the
 /// device the OS would pick, consistently across distros.
-fn pick_fallback_sink<'a>(candidates: impl Iterator<Item = (u32, &'a str, i64)>) -> Option<u32> {
+fn pick_fallback_sink(candidates: impl Iterator<Item = (u32, bool, i64)>) -> Option<u32> {
     candidates
-        .filter(|(_, name, _)| !is_virtual_sink(name))
+        .filter(|(_, managed, _)| !managed)
         .max_by_key(|&(_, _, priority)| priority)
         .map(|(id, _, _)| id)
 }
@@ -877,7 +1034,9 @@ fn fallback_sink(s: &State) -> Option<u32> {
             .map(|n| {
                 (
                     n.id,
-                    n.props.get("node.name").map(String::as_str).unwrap_or(""),
+                    n.props
+                        .get("node.name")
+                        .is_some_and(|name| s.is_managed_channel(name)),
                     n.props
                         .get("priority.session")
                         .and_then(|p| p.parse::<i64>().ok())
@@ -956,6 +1115,7 @@ fn ensure_all_links(state: &Rc<RefCell<State>>) {
     let bus_ids: Vec<(String, u32)> = s
         .bus_members
         .keys()
+        .filter(|bus| s.is_managed_bus(bus))
         .filter_map(|bus| node_ids.get(bus).map(|id| (bus.clone(), *id)))
         .collect();
 
@@ -994,17 +1154,19 @@ fn ensure_all_links(state: &Rc<RefCell<State>>) {
         // ---- output device links ----
         let explicit = s.channel_outputs.get(sink_name).cloned().flatten();
         let pinned = explicit.is_some();
-        let explicit_id = explicit
-            .as_deref()
-            .and_then(|name| node_ids.get(name).copied());
+        let explicit_id = explicit.as_deref().and_then(|name| {
+            s.node_by_name(name).and_then(|node| {
+                is_routable_output(&node.media_class, s.is_managed_channel(name)).then_some(node.id)
+            })
+        });
         let strict = s.channel_strict.contains(sink_name);
-        let default_id = s.default_sink_name.as_ref().and_then(|name| {
+        let default_id = s.default_sink_name.as_deref().and_then(|name| {
             // The desktop default is normally sink_game. Routing a
             // channel back into a managed virtual sink is a loop/no-op;
             // "follow default" must resolve to a real device instead.
-            (!is_virtual_sink(name))
-                .then(|| node_ids.get(name).copied())
-                .flatten()
+            s.node_by_name(name).and_then(|node| {
+                is_routable_output(&node.media_class, s.is_managed_channel(name)).then_some(node.id)
+            })
         });
         let target_id = resolve_target(explicit_id, pinned, strict, default_id, fallback);
         // Record where this channel resolves to (even when the link set is
@@ -1078,7 +1240,7 @@ fn ensure_all_links(state: &Rc<RefCell<State>>) {
         .default_sink_name
         .as_ref()
         .and_then(|name| {
-            (!is_virtual_sink(name))
+            (!s.is_managed_channel(name))
                 .then(|| node_ids.get(name).copied())
                 .flatten()
         })
@@ -1169,15 +1331,19 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
     match cmd {
         Cmd::CreateSink { name, label, reply } => {
             let mut s = state.borrow_mut();
-            if s.node_by_name(&name).is_some() {
-                // Already exists (e.g. leftover from a previous run) - the
-                // registry handler has adopted it. Still ours to keep alive.
-                s.desired.insert(name, (label, 0));
-                let _ = reply.send(Ok(()));
-                return;
-            }
             if !is_virtual_sink(&name) {
                 let _ = reply.send(Err(SinkError::UnknownSink(name)));
+                return;
+            }
+            if s.node_by_name(&name).is_some() {
+                if s.is_managed_channel(&name) {
+                    // Idempotent repeat while our existing request is live.
+                    let _ = reply.send(Ok(()));
+                } else {
+                    let _ = reply.send(Err(SinkError::Config(format!(
+                        "PipeWire node name already in use: {name}"
+                    ))));
+                }
                 return;
             }
             let Some(core) = CORE.with(|c| c.borrow().clone()) else {
@@ -1216,6 +1382,13 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         Cmd::DestroySink { name, reply } => {
             let mut s = state.borrow_mut();
             s.desired.remove(&name);
+            if let Some(waiters) = s.pending_creates.remove(&name) {
+                for waiter in waiters {
+                    let _ = waiter.send(Err(SinkError::Config(format!(
+                        "sink creation cancelled: {name}"
+                    ))));
+                }
+            }
             s.meters.remove(&name);
             // Drop the EQ insert before the sink proxy goes away so the
             // capture stream's target doesn't vanish under it mid-teardown.
@@ -1251,8 +1424,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             let streams = s
                 .nodes
                 .values()
-                .filter(|n| n.media_class == STREAM_CLASS)
-                .filter(|n| !crate::audio::types::should_hide_app(|key| n.props.get(key).cloned()))
+                .filter(|n| is_controllable_app_stream(&n.media_class, &n.props))
                 .map(|n| {
                     let (app_name, match_prop, match_value) =
                         crate::audio::types::resolve_identity(|key| n.props.get(key).cloned());
@@ -1271,7 +1443,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                         assigned_sink: s
                             .sink_of_stream(n.id)
                             .and_then(|sink| sink.props.get("node.name"))
-                            .filter(|name| is_virtual_sink(name))
+                            .filter(|name| s.is_managed_channel(name))
                             .cloned(),
                         volume_percent: n.volume_percent,
                         muted: n.muted,
@@ -1283,7 +1455,6 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         }
         Cmd::ListMicClients { reply } => {
             let s = state.borrow();
-            let mic_id = s.node_by_name(MIC_NODE).map(|node| node.id);
             let clients = s
                 .nodes
                 .values()
@@ -1291,19 +1462,28 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                 .filter(|node| {
                     !crate::audio::types::should_hide_app(|key| node.props.get(key).cloned())
                 })
-                .filter(|node| {
-                    node.props.get("target.object").map(String::as_str) == Some(MIC_NODE)
-                        || mic_id.is_some_and(|source| {
-                            s.links
+                .filter_map(|node| {
+                    let targeted = node
+                        .props
+                        .get("target.object")
+                        .filter(|name| is_mic_node(name))
+                        .cloned();
+                    let linked = s.nodes.values().find_map(|source| {
+                        let name = source.props.get("node.name")?;
+                        (is_mic_node(name)
+                            && s.links
                                 .values()
-                                .any(|(output, input)| *output == source && *input == node.id)
-                        })
+                                .any(|(output, input)| *output == source.id && *input == node.id))
+                        .then(|| name.clone())
+                    });
+                    targeted.or(linked).map(|mic_node| (node, mic_node))
                 })
-                .map(|node| {
+                .map(|(node, mic_node)| {
                     let (app_name, match_prop, match_value) =
                         crate::audio::types::resolve_identity(|key| node.props.get(key).cloned());
                     MicClient {
                         index: node.id,
+                        mic_node,
                         app_name,
                         match_prop,
                         match_value,
@@ -1325,11 +1505,12 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                 .nodes
                 .values()
                 .filter(|n| {
-                    n.media_class == SINK_CLASS
-                        && !n
-                            .props
+                    is_routable_output(
+                        &n.media_class,
+                        n.props
                             .get("node.name")
-                            .is_some_and(|name| is_virtual_sink(name))
+                            .is_some_and(|name| s.is_managed_channel(name)),
+                    )
                 })
                 .map(|n| OutputDevice {
                     index: n.id,
@@ -1383,7 +1564,11 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         } => {
             let result = {
                 let s = state.borrow();
-                set_props(s.node_by_name(&name), Some(percent), None)
+                if s.is_managed_control_node(&name) {
+                    set_props(s.node_by_name(&name), Some(percent), None)
+                } else {
+                    Err(SinkError::UnknownSink(name.clone()))
+                }
             };
             if result.is_ok() {
                 if let Some(node) = state.borrow_mut().nodes.values_mut().find(|node| {
@@ -1397,7 +1582,11 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         Cmd::SetNodeMuteByName { name, muted, reply } => {
             let result = {
                 let s = state.borrow();
-                set_props(s.node_by_name(&name), None, Some(muted))
+                if s.is_managed_control_node(&name) {
+                    set_props(s.node_by_name(&name), None, Some(muted))
+                } else {
+                    Err(SinkError::UnknownSink(name.clone()))
+                }
             };
             if result.is_ok() {
                 if let Some(node) = state.borrow_mut().nodes.values_mut().find(|node| {
@@ -1410,13 +1599,37 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         }
         Cmd::SetNodeVolumeById { id, percent, reply } => {
             let s = state.borrow();
-            let _ = reply.send(set_props(s.nodes.get(&id), Some(percent), None));
+            let result = match s
+                .nodes
+                .get(&id)
+                .filter(|node| is_controllable_app_stream(&node.media_class, &node.props))
+            {
+                Some(node) => set_props(Some(node), Some(percent), None),
+                None => Err(SinkError::UnknownSink(format!("application stream {id}"))),
+            };
+            let _ = reply.send(result);
         }
         Cmd::CreateBus { name, label, reply } => {
             let mut s = state.borrow_mut();
-            if s.bus_sources.contains_key(&name) || s.node_by_name(&name).is_some() {
-                s.desired.insert(name, (label, 1)); // adopted - keep alive
-                let _ = reply.send(Ok(()));
+            if !is_bus_name(&name) {
+                let _ = reply.send(Err(SinkError::UnknownSink(name)));
+                return;
+            }
+            if s.node_by_name(&name).is_some() {
+                if s.is_managed_bus(&name) {
+                    let _ = reply.send(Ok(()));
+                } else {
+                    let _ = reply.send(Err(SinkError::Config(format!(
+                        "PipeWire node name already in use: {name}"
+                    ))));
+                }
+                return;
+            }
+            if s.is_managed_bus(&name) {
+                // The proxy already exists, but its registry global has not
+                // appeared yet. Join the original request instead of creating
+                // a duplicate object with the same stable name.
+                s.pending_creates.entry(name).or_default().push(reply);
                 return;
             }
             let Some(core) = CORE.with(|c| c.borrow().clone()) else {
@@ -1426,8 +1639,10 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             match create_node_object(&core, &name, &label, 1) {
                 Ok(proxy) => {
                     s.desired.insert(name.clone(), (label, 1));
-                    s.bus_sources.insert(name, proxy);
-                    let _ = reply.send(Ok(()));
+                    s.bus_sources.insert(name.clone(), proxy);
+                    // Volume/mute operations need the registry node. Resolve
+                    // this request from `on_global`, once it is actually live.
+                    s.pending_creates.entry(name).or_default().push(reply);
                 }
                 Err(e) => {
                     let _ = reply.send(Err(SinkError::Config(format!("create bus: {e}"))));
@@ -1437,6 +1652,13 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
         Cmd::DestroyBus { name, reply } => {
             let mut s = state.borrow_mut();
             s.desired.remove(&name);
+            if let Some(waiters) = s.pending_creates.remove(&name) {
+                for waiter in waiters {
+                    let _ = waiter.send(Err(SinkError::Config(format!(
+                        "mix creation cancelled: {name}"
+                    ))));
+                }
+            }
             s.meters.remove(&name);
             s.bus_members.remove(&name);
             s.bus_links.retain(|(bus, _), _| bus != &name);
@@ -1455,10 +1677,14 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             channels,
             reply,
         } => {
-            state
-                .borrow_mut()
-                .bus_members
-                .insert(name, channels.into_iter().collect());
+            {
+                let mut s = state.borrow_mut();
+                if !s.is_managed_bus(&name) {
+                    let _ = reply.send(Err(SinkError::UnknownSink(name)));
+                    return;
+                }
+                s.bus_members.insert(name, channels.into_iter().collect());
+            }
             ensure_all_links(state);
             let _ = reply.send(Ok(()));
         }
@@ -1488,7 +1714,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             config,
             reply,
         } => {
-            if !is_virtual_sink(&sink_name) {
+            if !state.borrow().is_managed_channel(&sink_name) {
                 let _ = reply.send(Err(SinkError::UnknownSink(sink_name)));
                 return;
             }
@@ -1550,7 +1776,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             action,
             reply,
         } => {
-            if !is_virtual_sink(&sink_name) {
+            if !state.borrow().is_managed_channel(&sink_name) {
                 let _ = reply.send(Err(SinkError::UnknownSink(sink_name)));
                 return;
             }
@@ -1686,27 +1912,59 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             }
         }
         Cmd::SetMicConfig { config, reply } => {
-            let (needs_create, needs_destroy, needs_rebuild, source_exists, orphaned) = {
+            let node_name = config.node_name.clone();
+            if !is_mic_node(&node_name) {
+                let _ = reply.send(Err(SinkError::Config(
+                    "invalid microphone node name".into(),
+                )));
+                return;
+            }
+            if state.borrow().pending_mic_previous.contains_key(&node_name) {
+                let _ = reply.send(Err(SinkError::Config(
+                    "microphone creation is still awaiting readiness".into(),
+                )));
+                return;
+            }
+            if let Some(input) = config.input_device.as_deref() {
+                let invalid_live_target = state
+                    .borrow()
+                    .node_by_name(input)
+                    .is_some_and(|node| !is_routable_input(&node.media_class, Some(input)));
+                if invalid_live_target {
+                    let _ = reply.send(Err(SinkError::Config(format!(
+                        "invalid microphone input: {input}"
+                    ))));
+                    return;
+                }
+            }
+            let (prev, needs_create, needs_destroy, needs_rebuild, source_exists, orphaned) = {
                 let mut s = state.borrow_mut();
-                let prev = s.mic_config.clone();
-                s.mic_config = config.clone();
+                let prev = s
+                    .mic_configs
+                    .get(&node_name)
+                    .cloned()
+                    .unwrap_or_else(|| MicConfig {
+                        node_name: node_name.clone(),
+                        ..Default::default()
+                    });
+                s.mic_configs.insert(node_name.clone(), config.clone());
 
                 // Live-tunable params apply without a rebuild.
-                if let Some(streams) = &s.mic_streams {
+                if let Some(streams) = s.mic_streams.get(&node_name) {
                     streams.params.apply(&config);
                 }
 
                 // Renaming the published mic recreates the node so other
                 // apps see the new description immediately.
                 let needs_recreate = config.enabled
-                    && s.mic_source.is_some()
+                    && s.mic_sources.contains_key(&node_name)
                     && prev.output_label != config.output_label;
                 let mut orphaned: Vec<u32> = Vec::new();
                 if needs_recreate {
                     // Remember who was capturing the mic (Discord, OBS …) -
                     // destroying the node drops them onto the fallback
                     // source, and they'd silently stay there.
-                    if let Some(mic) = s.node_by_name(MIC_NODE) {
+                    if let Some(mic) = s.node_by_name(&node_name) {
                         let mic_id = mic.id;
                         orphaned = s
                             .links
@@ -1720,26 +1978,28 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                             })
                             .collect();
                     }
-                    s.mic_streams = None;
-                    s.mic_links.clear();
-                    if let Some(proxy) = s.mic_source.take() {
+                    s.mic_links.remove(&node_name);
+                    if let Some(proxy) = s.mic_sources.remove(&node_name) {
                         // Our own destroy - the heal path should expect this
                         // removal rather than treat it as external and race a
                         // second recreate.
-                        s.mic_expected_removals += 1;
+                        *s.mic_expected_removals
+                            .entry(node_name.clone())
+                            .or_default() += 1;
                         if let Some(core) = CORE.with(|c| c.borrow().clone()) {
                             let _ = core.destroy_object(proxy);
                         }
                     }
                 }
 
-                let needs_create = config.enabled && s.mic_source.is_none();
-                let needs_destroy = !config.enabled && s.mic_source.is_some();
+                let needs_create = config.enabled && !s.mic_sources.contains_key(&node_name);
+                let needs_destroy = !config.enabled && s.mic_sources.contains_key(&node_name);
                 let needs_rebuild = config.enabled
-                    && s.mic_streams.is_some()
+                    && s.mic_streams.contains_key(&node_name)
                     && prev.input_device != config.input_device;
-                let source_exists = s.node_by_name(MIC_NODE).is_some();
+                let source_exists = s.node_by_name(&node_name).is_some();
                 (
+                    prev,
                     needs_create,
                     needs_destroy,
                     needs_rebuild,
@@ -1750,10 +2010,10 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
 
             if needs_destroy {
                 let mut s = state.borrow_mut();
-                s.desired.remove(MIC_NODE);
-                s.mic_streams = None;
-                s.mic_links.clear();
-                if let Some(proxy) = s.mic_source.take() {
+                s.desired.remove(&node_name);
+                s.mic_streams.remove(&node_name);
+                s.mic_links.remove(&node_name);
+                if let Some(proxy) = s.mic_sources.remove(&node_name) {
                     if let Some(core) = CORE.with(|c| c.borrow().clone()) {
                         let _ = core.destroy_object(proxy);
                     }
@@ -1771,7 +2031,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                     "adapter",
                     &pw::properties::properties! {
                         "factory.name" => "support.null-audio-sink",
-                        "node.name" => MIC_NODE,
+                        "node.name" => node_name.as_str(),
                         "node.description" => config.output_label.as_str(),
                         "media.class" => VIRTUAL_SOURCE_CLASS,
                         "audio.position" => "[ MONO ]",
@@ -1779,9 +2039,9 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                 ) {
                     Ok(proxy) => {
                         let mut s = state.borrow_mut();
-                        s.mic_source = Some(proxy);
+                        s.mic_sources.insert(node_name.clone(), proxy);
                         s.desired
-                            .insert(MIC_NODE.to_string(), (config.output_label.clone(), 2));
+                            .insert(node_name.clone(), (config.output_label.clone(), 2));
                         // Re-point streams that were capturing the old node
                         // (target.object by name survives the recreation -
                         // the session manager re-attaches them when the new
@@ -1793,37 +2053,87 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                         // moves elsewhere) would be wrong for a name.
                         if let Some(meta) = &s.metadata {
                             for id in &orphaned {
-                                meta.set_property(*id, "target.object", None, Some(MIC_NODE));
+                                meta.set_property(*id, "target.object", None, Some(&node_name));
                             }
                         }
-                        // Streams attach when the global appears (on_node).
+                        // Resolve only after the registry global appears.
+                        // on_node also reports any last-chance DSP build
+                        // failure instead of acknowledging a silent mic.
+                        s.pending_creates
+                            .entry(node_name.clone())
+                            .or_default()
+                            .push(reply);
+                        s.pending_mic_previous.insert(node_name.clone(), prev);
+                        return;
                     }
                     Err(e) => {
+                        let mut s = state.borrow_mut();
+                        s.mic_configs.insert(node_name.clone(), prev.clone());
+                        if let Some(streams) = s.mic_streams.get(&node_name) {
+                            streams.params.apply(&prev);
+                        }
                         let _ =
                             reply.send(Err(SinkError::Config(format!("create mic source: {e}"))));
                         return;
                     }
                 }
             } else if needs_rebuild {
-                state.borrow_mut().mic_streams = None;
                 if source_exists {
-                    build_mic_streams(state);
+                    if let Err(error) = build_mic_streams(state, &node_name, &config) {
+                        let mut s = state.borrow_mut();
+                        s.mic_configs.insert(node_name.clone(), prev.clone());
+                        if let Some(streams) = s.mic_streams.get(&node_name) {
+                            streams.params.apply(&prev);
+                        }
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
                 }
             } else if config.enabled && source_exists {
                 // Source exists but streams may be missing (earlier failure
                 // or config re-applied at startup) - attach if needed.
-                let missing = state.borrow().mic_streams.is_none();
+                let missing = !state.borrow().mic_streams.contains_key(&node_name);
                 if missing {
-                    build_mic_streams(state);
+                    if let Err(error) = build_mic_streams(state, &node_name, &config) {
+                        let mut s = state.borrow_mut();
+                        s.mic_configs.insert(node_name.clone(), prev.clone());
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
                 }
             }
             let _ = reply.send(Ok(()));
         }
-        Cmd::MicTest { action, reply } => {
+        Cmd::CancelPendingMic { node_name, reply } => {
+            let Some(core) = CORE.with(|c| c.borrow().clone()) else {
+                let _ = reply.send(Err(SinkError::Config("core is gone".into())));
+                return;
+            };
+            let cancelled = rollback_pending_mic(state, &node_name, &core);
+            if cancelled {
+                if let Some(waiters) = state.borrow_mut().pending_creates.remove(&node_name) {
+                    for waiter in waiters {
+                        let _ = waiter.send(Err(SinkError::Config(
+                            "microphone readiness request was cancelled".into(),
+                        )));
+                    }
+                }
+            }
+            let _ = reply.send(Ok(()));
+        }
+        Cmd::FinalizePendingMic { node_name, reply } => {
+            state.borrow_mut().pending_mic_previous.remove(&node_name);
+            let _ = reply.send(Ok(()));
+        }
+        Cmd::MicTest {
+            node_name,
+            action,
+            reply,
+        } => {
             let result = state
                 .borrow()
                 .mic_streams
-                .as_ref()
+                .get(&node_name)
                 .ok_or_else(|| SinkError::Config("enable the processed microphone first".into()))
                 .and_then(|streams| streams.test.apply(action));
             let _ = reply.send(result);
@@ -1834,11 +2144,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                 .nodes
                 .values()
                 .filter(|n| {
-                    let name = n.props.get("node.name").map(String::as_str);
-                    n.media_class == SOURCE_CLASS
-                        || (n.media_class == VIRTUAL_SOURCE_CLASS
-                            && name != Some(MIC_NODE)
-                            && !name.is_some_and(is_bus_name))
+                    is_routable_input(&n.media_class, n.props.get("node.name").map(String::as_str))
                 })
                 .map(|n| OutputDevice {
                     index: n.id,
@@ -1888,9 +2194,23 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             output_name,
             reply,
         } => {
-            if !is_virtual_sink(&sink_name) {
+            if !state.borrow().is_managed_channel(&sink_name) {
                 let _ = reply.send(Err(SinkError::UnknownSink(sink_name)));
                 return;
+            }
+            if let Some(output) = output_name.as_deref() {
+                let invalid_live_target = {
+                    let s = state.borrow();
+                    s.node_by_name(output).is_some_and(|node| {
+                        !is_routable_output(&node.media_class, s.is_managed_channel(output))
+                    })
+                };
+                if invalid_live_target {
+                    let _ = reply.send(Err(SinkError::Config(format!(
+                        "invalid channel output: {output}"
+                    ))));
+                    return;
+                }
             }
             state
                 .borrow_mut()
@@ -1904,7 +2224,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             enabled,
             reply,
         } => {
-            if !is_virtual_sink(&sink_name) {
+            if !state.borrow().is_managed_channel(&sink_name) {
                 let _ = reply.send(Err(SinkError::UnknownSink(sink_name)));
                 return;
             }
@@ -1925,6 +2245,20 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
             reply,
         } => {
             let s = state.borrow();
+            if !s
+                .nodes
+                .get(&id)
+                .is_some_and(|node| is_controllable_app_stream(&node.media_class, &node.props))
+            {
+                let _ = reply.send(Err(SinkError::UnknownSink(format!(
+                    "application stream {id}"
+                ))));
+                return;
+            }
+            if !sink_name.is_empty() && !s.is_managed_channel(&sink_name) {
+                let _ = reply.send(Err(SinkError::UnknownSink(sink_name)));
+                return;
+            }
             let Some(metadata) = s.metadata.as_ref() else {
                 let _ = reply.send(Err(SinkError::Config(
                     "no default metadata object (is WirePlumber running?)".into(),
@@ -2047,12 +2381,21 @@ mod tests {
     #[test]
     fn fallback_picks_highest_priority_real_sink() {
         let candidates = [
-            (1u32, "sink_game", 10_000i64), // virtual - never a fallback
-            (2, "alsa_output.hdmi", 500),
-            (3, "alsa_output.analog", 900),
-            (4, "alsa_output.usb", 700),
+            (1u32, true, 10_000i64), // managed - never a fallback
+            (2, false, 500),
+            (3, false, 900),
+            (4, false, 700),
         ];
         assert_eq!(pick_fallback_sink(candidates.into_iter()), Some(3));
+    }
+
+    #[test]
+    fn fallback_does_not_infer_ownership_from_a_name_prefix() {
+        let candidates = [
+            (1u32, true, 10_000i64),
+            (2, false, 500), // an unrelated external `sink_*` is still hardware
+        ];
+        assert_eq!(pick_fallback_sink(candidates.into_iter()), Some(2));
     }
 
     #[test]
@@ -2087,7 +2430,36 @@ mod tests {
         // Channel sinks are virtual and must never be a fallback target.
         // (sink_mic/sink_stream are sources, excluded by media_class before
         // reaching here - so they're not exercised at this layer.)
-        let candidates = [(1u32, "sink_game", 0i64), (2, "sink_chat", 0)];
+        let candidates = [(1u32, true, 0i64), (2, true, 0)];
         assert_eq!(pick_fallback_sink(candidates.into_iter()), None);
+    }
+
+    #[test]
+    fn explicit_route_targets_exclude_managed_outputs_and_service_sources() {
+        assert!(is_routable_output(SINK_CLASS, false));
+        assert!(!is_routable_output(SINK_CLASS, true));
+        assert!(!is_routable_output(SOURCE_CLASS, false));
+
+        assert!(is_routable_input(SOURCE_CLASS, Some("alsa_input.deck")));
+        assert!(is_routable_input(
+            VIRTUAL_SOURCE_CLASS,
+            Some("external_virtual_mic")
+        ));
+        assert!(!is_routable_input(VIRTUAL_SOURCE_CLASS, Some("sink_mic")));
+        assert!(!is_routable_input(
+            VIRTUAL_SOURCE_CLASS,
+            Some("sink_stream")
+        ));
+    }
+
+    #[test]
+    fn app_controls_only_accept_visible_playback_streams() {
+        let visible = HashMap::from([("application.name".to_string(), "Game".to_string())]);
+        assert!(is_controllable_app_stream(STREAM_CLASS, &visible));
+        assert!(!is_controllable_app_stream(SINK_CLASS, &visible));
+        assert!(!is_controllable_app_stream(CAPTURE_STREAM_CLASS, &visible));
+
+        let hidden = HashMap::from([("media.role".to_string(), "Event".to_string())]);
+        assert!(!is_controllable_app_stream(STREAM_CLASS, &hidden));
     }
 }

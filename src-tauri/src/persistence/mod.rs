@@ -2,6 +2,7 @@ pub mod active;
 pub mod aliases;
 pub mod assignments;
 pub mod autostart;
+pub mod backup;
 pub mod buses;
 pub mod channels;
 pub mod eq;
@@ -10,6 +11,7 @@ pub mod mic;
 pub mod mic_presets;
 pub mod outputs;
 pub mod prefs;
+pub mod profile_automation;
 pub mod profiles;
 pub mod seen;
 pub mod window;
@@ -62,19 +64,45 @@ pub fn ensure_private_dir(path: &std::path::Path) -> std::io::Result<()> {
 /// [`ensure_private_dir`] first, which this preserves.
 pub fn write_atomic(path: &std::path::Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     // Temp file in the same directory so the rename stays on one filesystem
-    // (a cross-device rename is not atomic).
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
+    // (a cross-device rename is not atomic). Each writer needs its own file:
+    // several command threads may persist independent settings concurrently.
+    let (tmp, mut file) = loop {
+        let mut candidate = path.as_os_str().to_owned();
+        candidate.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let candidate = std::path::PathBuf::from(candidate);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
     let result = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
         file.write_all(contents.as_ref())?;
         file.sync_all()?;
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        // fsyncing the file makes its contents durable; fsyncing the parent
+        // makes the rename itself durable across sudden power loss.
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -128,12 +156,59 @@ mod tests {
             "second, longer contents"
         );
 
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
         assert!(
-            !std::path::Path::new(&tmp).exists(),
+            std::fs::read_dir(&dir).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            }),
             "temp file must not linger"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_atomic_writers_do_not_share_a_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "sonux-concurrent-write-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let path = std::sync::Arc::new(dir.join("cfg.json"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let payloads = (0..8)
+            .map(|index| format!("writer-{index}:{}", "x".repeat(32 * 1024)))
+            .collect::<Vec<_>>();
+
+        let handles = payloads
+            .iter()
+            .cloned()
+            .map(|payload| {
+                let path = std::sync::Arc::clone(&path);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_atomic(&path, payload)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().expect("concurrent write");
+        }
+        let saved = std::fs::read_to_string(&*path).unwrap();
+        assert!(payloads.contains(&saved));
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

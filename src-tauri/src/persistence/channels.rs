@@ -10,6 +10,10 @@ pub const RESERVED_SINK_NAMES: [&str; 2] = ["sink_mic", "sink_stream"];
 /// Upper bound on user channels (level-meter slots are budgeted for this).
 pub const MAX_CHANNELS: usize = 10;
 
+pub fn is_reserved_sink_name(name: &str) -> bool {
+    RESERVED_SINK_NAMES.contains(&name)
+}
+
 /// One user-defined mixer channel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelDef {
@@ -117,7 +121,7 @@ impl Channels {
         for def in parsed.channels {
             let name = def.name.as_str();
             let valid = name.starts_with("sink_")
-                && !RESERVED_SINK_NAMES.contains(&name)
+                && !is_reserved_sink_name(name)
                 && seen.insert(def.name.clone());
             if valid && channels.len() < MAX_CHANNELS {
                 channels.push(def);
@@ -158,7 +162,12 @@ impl Channels {
 
     /// Add a channel for `label`, generating a unique reserved-safe sink
     /// name. Returns the new definition.
-    pub fn add(&mut self, label: &str, icon: Option<String>) -> Result<ChannelDef, SinkError> {
+    pub fn add_with_spatial(
+        &mut self,
+        label: &str,
+        icon: Option<String>,
+        spatial: bool,
+    ) -> Result<ChannelDef, SinkError> {
         let label = label.trim();
         if label.is_empty() || label.len() > 24 {
             return Err(SinkError::Config(
@@ -170,10 +179,16 @@ impl Channels {
                 "at most {MAX_CHANNELS} channels are supported"
             )));
         }
-        let base = format!("sink_{}", slugify(label));
+        let prefix = if spatial { "sink_spatial_" } else { "sink_" };
+        let mut base = format!("{prefix}{}", slugify(label));
+        if is_reserved_sink_name(&base)
+            || (!spatial && matches!(base.as_str(), "sink_game" | "sink_media"))
+        {
+            base = format!("{prefix}channel_{}", slugify(label));
+        }
         let mut name = base.clone();
         let mut counter = 2;
-        while self.get(&name).is_some() || RESERVED_SINK_NAMES.contains(&name.as_str()) {
+        while self.get(&name).is_some() || is_reserved_sink_name(&name) {
             name = format!("{base}_{counter}");
             counter += 1;
         }
@@ -247,26 +262,49 @@ mod tests {
     #[test]
     fn add_generates_unique_safe_names() {
         let mut c = Channels::default();
-        let d = c.add("Voice Chat!", Some("mic".into())).expect("adds");
+        let d = c
+            .add_with_spatial("Voice Chat!", Some("mic".into()), false)
+            .expect("adds");
         assert_eq!(d.name, "sink_voice_chat");
         assert_eq!(d.icon.as_deref(), Some("mic"));
-        let d2 = c.add("Voice Chat", None).expect("adds duplicate label");
+        let d2 = c
+            .add_with_spatial("Voice Chat", None, false)
+            .expect("adds duplicate label");
         assert_eq!(d2.name, "sink_voice_chat_2");
         // Reserved collision: label "mic" must not produce sink_mic.
-        let d3 = c.add("Mic", None).expect("adds");
-        assert_eq!(d3.name, "sink_mic_2");
+        let d3 = c.add_with_spatial("Mic", None, false).expect("adds");
+        assert_eq!(d3.name, "sink_channel_mic");
+        assert!(!is_reserved_sink_name(&d3.name));
+    }
+
+    #[test]
+    fn spatial_channels_get_a_stable_spatial_prefix() {
+        let mut channels = Channels::default();
+        channels.remove("sink_game").expect("removes legacy game");
+        let stereo = channels
+            .add_with_spatial("Game", None, false)
+            .expect("adds stereo game");
+        assert_eq!(stereo.name, "sink_channel_game");
+        assert!(!crate::audio::types::is_spatial_channel(&stereo.name));
+        let spatial = channels
+            .add_with_spatial("Game", Some("sports_esports".into()), true)
+            .expect("adds spatial channel");
+        assert_eq!(spatial.name, "sink_spatial_game");
+        assert!(crate::audio::types::is_spatial_channel(&spatial.name));
     }
 
     #[test]
     fn pathological_labels_hit_the_slug_fallback() {
         let mut c = Channels::default();
         // All-special-char labels slugify to empty → "channel" fallback.
-        let d = c.add("!!!", None).expect("adds");
+        let d = c.add_with_spatial("!!!", None, false).expect("adds");
         assert_eq!(d.name, "sink_channel");
-        let d2 = c.add("___", None).expect("adds second pathological label");
+        let d2 = c
+            .add_with_spatial("___", None, false)
+            .expect("adds second pathological label");
         assert_eq!(d2.name, "sink_channel_2");
         // Whitespace-only labels are rejected outright.
-        assert!(c.add("   ", None).is_err());
+        assert!(c.add_with_spatial("   ", None, false).is_err());
     }
 
     #[test]

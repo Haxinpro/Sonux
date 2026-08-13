@@ -1,15 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useMixerStore, type Levels } from "../store/mixer";
+import { publishLevels, type Levels } from "../lib/liveMeters";
+import { useMixerStore } from "../store/mixer";
 
 const FAST_POLL_INTERVAL_MS = 500;
 const SLOW_POLL_INTERVAL_MS = 2000;
 
 /**
  * Boots the audio layer: creates the virtual sinks on mount, polls the app
- * stream/channel controls quickly (also the auto-route enforcement trigger),
- * polls slower device/history state every 2s, subscribes to live VU levels,
- * and auto-loads profiles bound to newly connected devices (Phase 5).
+ * stream/channel controls quickly while visible, polls slower device/history
+ * state every 2s, subscribes to live VU levels, and auto-loads profiles bound
+ * to newly connected devices (Phase 5). A native worker keeps application
+ * discovery and auto-routing alive while the window is hidden in the tray.
  */
 export function useAudio() {
   const initialize = useMixerStore((s) => s.initialize);
@@ -18,10 +20,6 @@ export function useAudio() {
   const fetchOutputs = useMixerStore((s) => s.fetchOutputs);
   const fetchMicClients = useMixerStore((s) => s.fetchMicClients);
   const fetchSeenApps = useMixerStore((s) => s.fetchSeenApps);
-  const setLevels = useMixerStore((s) => s.setLevels);
-  const outputDevices = useMixerStore((s) => s.outputDevices);
-  const profiles = useMixerStore((s) => s.profiles);
-  const loadProfile = useMixerStore((s) => s.loadProfile);
 
   useEffect(() => {
     void initialize();
@@ -77,11 +75,15 @@ export function useAudio() {
   }, [initialize, fetchAppStreams, fetchChannels, fetchOutputs, fetchMicClients, fetchSeenApps]);
 
   useEffect(() => {
-    const unlisten = listen<Levels>("levels", (event) => setLevels(event.payload));
+    const unlisten = listen<Levels>("levels", (event) => {
+      // Meter peaks bypass Zustand: changing a level must not re-render every
+      // control and app list in its mixer strip.
+      if (useMixerStore.getState().meterMode !== "off") publishLevels(event.payload);
+    });
     return () => {
       void unlisten.then((fn) => fn());
     };
-  }, [setLevels]);
+  }, []);
 
   // Profile switched from the tray menu - sync the whole UI.
   const onProfileChanged = useMixerStore((s) => s.onProfileChanged);
@@ -93,23 +95,4 @@ export function useAudio() {
       void unlisten.then((fn) => fn());
     };
   }, [onProfileChanged]);
-
-  // Hardware profile auto-switch: when a device with a bound profile
-  // appears, load that profile.
-  const seenDevices = useRef<Set<string> | null>(null);
-  useEffect(() => {
-    const names = new Set(outputDevices.map((d) => d.name));
-    if (seenDevices.current === null) {
-      // First sample: just learn the current device set.
-      if (names.size > 0) seenDevices.current = names;
-      return;
-    }
-    for (const name of names) {
-      if (!seenDevices.current.has(name)) {
-        const bound = profiles.find((p) => p.trigger_device === name);
-        if (bound) void loadProfile(bound.name);
-      }
-    }
-    seenDevices.current = names;
-  }, [outputDevices, profiles, loadProfile]);
 }

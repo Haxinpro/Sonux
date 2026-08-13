@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { EqConfig } from "../../types";
 import { Ms } from "../Icons";
 import { Popover } from "../Popover";
@@ -175,12 +174,8 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
 
   const importFromFile = async () => {
     try {
-      const path = await openDialog({
-        multiple: false,
-        filters: [{ name: "EQ preset", extensions: ["json", "txt"] }],
-      });
-      if (typeof path !== "string") return;
-      applyImported(await invoke<EqConfig>("import_eq_file", { path }));
+      const imported = await invoke<EqConfig | null>("import_eq_file");
+      if (imported) applyImported(imported);
     } catch (e) {
       onError(String(e));
     }
@@ -188,13 +183,9 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
 
   const exportToFile = async () => {
     try {
-      const path = await saveDialog({
-        defaultPath: `${sinkName.replace(/^sink_/, "")}-channel.json`,
-        filters: [{ name: "Channel preset", extensions: ["json"] }],
-      });
-      if (typeof path !== "string") return;
-      await invoke("export_channel_eq_to_file", { sinkName, path });
-      setMenuOpen(false);
+      if (await invoke<boolean>("export_channel_eq_to_file", { sinkName })) {
+        setMenuOpen(false);
+      }
     } catch (e) {
       onError(String(e));
     }

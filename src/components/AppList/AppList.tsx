@@ -56,7 +56,7 @@ export function AppList() {
           </div>
         ) : (
           groups.map((group) => (
-            <div key={group.key}>
+            <div className="app-group" key={group.key}>
               <div className="section-label">
                 {group.label} · {group.streams.length}
               </div>
@@ -70,14 +70,14 @@ export function AppList() {
         )}
 
         {inactive.length > 0 && (
-          <>
+          <div className="app-group">
             <div className="section-label">Not running · {inactive.length}</div>
             <div className="card card-inactive">
               {inactive.map((app) => (
                 <InactiveRow key={`${app.match_prop}:${app.match_value}`} app={app} />
               ))}
             </div>
-          </>
+          </div>
         )}
 
         {ignored.length > 0 && (

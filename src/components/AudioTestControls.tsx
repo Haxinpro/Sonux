@@ -18,8 +18,8 @@ interface Diagnostic {
 
 const CHANNEL_DIAGNOSTICS: Record<string, Diagnostic[]> = {
   sink_game: [
-    { id: "game_action", icon: "sports_esports", title: "Play CC0 action sample" },
-    { id: "game_footsteps", icon: "directions_walk", title: "Play CC0 footstep sample" },
+    { id: "game_action", icon: "sports_esports", title: "Play CC0 action soundtrack" },
+    { id: "game_footsteps", icon: "directions_walk", title: "Play CC0 footsteps" },
   ],
   sink_chat: [
     { id: "chat_female", icon: "record_voice_over", title: "Play CC0 female voice" },
@@ -38,9 +38,11 @@ const CHANNEL_DIAGNOSTICS: Record<string, Diagnostic[]> = {
 export function AudioTestControls({
   kind,
   sinkName,
+  nodeName,
 }: Readonly<{
   kind: "mic" | "channel";
   sinkName?: string;
+  nodeName?: string;
 }>) {
   const [status, setStatus] = useState<TestStatus>({
     recording: false,
@@ -48,7 +50,7 @@ export function AudioTestControls({
     has_recording: false,
   });
   const statusCommand = kind === "mic" ? "get_mic_test_status" : "get_channel_test_status";
-  const args = kind === "channel" ? { sinkName } : undefined;
+  const args = kind === "channel" ? { sinkName } : { nodeName };
 
   useEffect(() => {
     let mounted = true;
@@ -63,7 +65,7 @@ export function AudioTestControls({
       mounted = false;
       window.clearInterval(timer);
     };
-  }, [statusCommand, sinkName]);
+  }, [statusCommand, sinkName, nodeName]);
 
   const run = (command: string, extra?: Record<string, unknown>) => {
     void invoke<TestStatus>(command, { ...args, ...extra })

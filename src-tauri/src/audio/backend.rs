@@ -14,6 +14,21 @@ pub trait AudioBackend: Send + Sync {
     /// mixers (channels are user-defined since the dynamic-channels work).
     fn create_virtual_sink(&self, name: &str, label: &str) -> Result<(), SinkError>;
     fn destroy_virtual_sink(&self, name: &str) -> Result<(), SinkError>;
+    /// Recreate a managed sink with a new immutable PipeWire/PulseAudio
+    /// description. Destruction is asynchronous in PipeWire, so retry until
+    /// the old global has disappeared instead of accidentally adopting it.
+    fn set_virtual_sink_label(&self, name: &str, label: &str) -> Result<(), SinkError> {
+        self.destroy_virtual_sink(name)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match self.create_virtual_sink(name, label) {
+                Ok(()) => return Ok(()),
+                Err(error) if std::time::Instant::now() >= deadline => return Err(error),
+                Err(_) => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     fn list_app_streams(&self) -> Result<Vec<AppStream>, SinkError>;
     /// Applications currently recording from the processed virtual mic.
     /// The pactl fallback has no mic engine, so an empty default is correct.
@@ -86,6 +101,19 @@ pub trait AudioBackend: Send + Sync {
     /// Destroy a mix bus (its links go with it).
     fn destroy_bus(&self, name: &str) -> Result<(), SinkError>;
 
+    fn set_bus_label(&self, name: &str, label: &str) -> Result<(), SinkError> {
+        self.destroy_bus(name)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match self.create_bus(name, label) {
+                Ok(()) => return Ok(()),
+                Err(error) if std::time::Instant::now() >= deadline => return Err(error),
+                Err(_) => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// Replace the set of channels feeding a mix bus.
     fn set_bus_members(&self, name: &str, channels: &[String]) -> Result<(), SinkError>;
 
@@ -112,7 +140,11 @@ pub trait AudioBackend: Send + Sync {
     fn set_mic_config(&self, config: &MicConfig) -> Result<(), SinkError>;
 
     /// Control the raw-before-processing microphone test recorder/loop.
-    fn mic_test(&self, _action: MicTestAction) -> Result<MicTestStatus, SinkError> {
+    fn mic_test(
+        &self,
+        _node_name: &str,
+        _action: MicTestAction,
+    ) -> Result<MicTestStatus, SinkError> {
         Err(SinkError::Config(
             "microphone testing requires the native PipeWire backend".into(),
         ))

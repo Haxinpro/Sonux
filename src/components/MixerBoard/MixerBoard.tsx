@@ -4,6 +4,7 @@ import { useMixerStore } from "../../store/mixer";
 import { MASTER_BUS } from "../../types";
 import { Ms, ICON_CHOICES } from "../Icons";
 import { Modal } from "../Modal";
+import { ProcessingInfo } from "../ProcessingInfo";
 import { ChannelStrip } from "./ChannelStrip";
 import { MicStrip } from "./MicStrip";
 import { BusStrip } from "./StreamMixStrip";
@@ -19,6 +20,7 @@ function MixGroup({
   label,
   count,
   hint,
+  info,
   onAdd,
   addTitle,
   children,
@@ -28,6 +30,8 @@ function MixGroup({
   count: string;
   /** Hover explanation of what this group does. */
   hint: string;
+  /** Optional keyboard-reachable detailed explanation. */
+  info?: { label: string; text: string };
   onAdd?: () => void;
   addTitle?: string;
   children: ReactNode;
@@ -38,11 +42,16 @@ function MixGroup({
         <Ms name={icon} className="gh-icon" />
         <span className="gh-label">{label}</span>
         <span className="gh-count">{count}</span>
-        {onAdd && (
-          <div className="gh-add-wrap">
-            <button type="button" className="gh-add" onClick={onAdd} title={addTitle}>
-              <Ms name="add" />
-            </button>
+        {(info || onAdd) && (
+          <div className="group-head-actions">
+            {info && <ProcessingInfo label={info.label} text={info.text} />}
+            {onAdd && (
+              <div className="gh-add-wrap">
+                <button type="button" className="gh-add" onClick={onAdd} title={addTitle}>
+                  <Ms name="add" />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -51,13 +60,27 @@ function MixGroup({
   );
 }
 
-export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: string) => void }>) {
+export function MixerBoard({
+  onOpenChannel,
+  onOpenProfiles,
+  onOpenMic,
+}: Readonly<{
+  onOpenChannel: (name: string) => void;
+  onOpenProfiles: () => void;
+  onOpenMic: () => void;
+}>) {
   const channels = useMixerStore((s) => s.channels);
   const buses = useMixerStore((s) => s.buses);
   const appStreams = useMixerStore((s) => s.appStreams);
   const addChannel = useMixerStore((s) => s.addChannel);
   const addBus = useMixerStore((s) => s.addBus);
   const micConfig = useMixerStore((s) => s.micConfig);
+  const micConfigs = useMixerStore((s) => s.micConfigs);
+  const multipleMics = useMixerStore((s) => s.multipleMics);
+  const selectMic = useMixerStore((s) => s.selectMic);
+  const setMicCreationOpen = useMixerStore((s) => s.setMicCreationOpen);
+  const moveMicChannel = useMixerStore((s) => s.moveMicChannel);
+  const commitMicChannelOrder = useMixerStore((s) => s.commitMicChannelOrder);
   const backendNative = useMixerStore((s) => s.backendNative);
 
   const moveChannel = useMixerStore((s) => s.moveChannel);
@@ -66,9 +89,11 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
   const [addingChannel, setAddingChannel] = useState(false);
   const [channelLabel, setChannelLabel] = useState("");
   const [channelIcon, setChannelIcon] = useState(ICON_CHOICES[0]);
+  const [channelSpatial, setChannelSpatial] = useState(false);
   const [addingMix, setAddingMix] = useState(false);
   const [mixLabel, setMixLabel] = useState("");
   const [draggingChannel, setDraggingChannel] = useState<string | null>(null);
+  const [draggingMic, setDraggingMic] = useState<string | null>(null);
 
   if (channels.length === 0) {
     return (
@@ -100,11 +125,12 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
     setAddingChannel(false);
     setChannelLabel("");
     setChannelIcon(ICON_CHOICES[0]);
+    setChannelSpatial(false);
   };
   const createChannel = () => {
     const label = channelLabel.trim();
     if (!label) return;
-    void addChannel(label, channelIcon);
+    void addChannel(label, channelIcon, channelSpatial);
     closeChannelModal();
   };
   const createMix = () => {
@@ -127,10 +153,14 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
                 label="Master"
                 count="1"
                 hint="The master profile and a capturable mix containing every playback channel."
+                info={{
+                  label: "Master recording mix",
+                  text: "Master combines every routed playback channel for OBS and other recorders. Its fader and mute change the captured mix, not your normal speaker or headphone volume. Use the headphones button to monitor it. Apps shown below are waiting to be routed and are not controlled by this fader.",
+                }}
                 onAdd={extraBuses.length < MAX_BUSES ? () => setAddingMix(true) : undefined}
                 addTitle="Add a mix (capturable source for OBS/recorders)"
               >
-                <BusStrip bus={masterBus} />
+                <BusStrip bus={masterBus} onManageProfiles={onOpenProfiles} />
               </MixGroup>
               <div className="group-div" />
             </>
@@ -170,16 +200,49 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
             ))}
           </MixGroup>
 
-          {micConfig?.enabled && (
+          {micConfig && (
             <>
               <div className="group-div" />
               <MixGroup
                 icon="mic"
                 label="Mic"
-                count="1"
-                hint="Your processed microphone. Apps capture the result as Sonar mic."
+                count={multipleMics ? `${micConfigs.filter((mic) => mic.enabled).length}/${micConfigs.length}` : (micConfig.enabled ? "1" : "Off")}
+                hint={micConfig.enabled
+                  ? "Your processed microphone. Apps capture the result as the Sonux microphone."
+                  : "The processed microphone is disabled for this profile. Open it to configure or enable it."}
+                onAdd={multipleMics ? () => {
+                  selectMic("sink_mic");
+                  setMicCreationOpen(true);
+                  onOpenMic();
+                } : undefined}
+                addTitle="Add microphone channel"
               >
-                <MicStrip />
+                {(multipleMics ? micConfigs : [micConfig]).map((mic) => (
+                  <MicStrip
+                    key={mic.node_name}
+                    config={mic}
+                    dragging={draggingMic === mic.node_name}
+                    onGripDragStart={(event) => {
+                      setDraggingMic(mic.node_name);
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", mic.node_name);
+                    }}
+                    onGripDragEnd={() => {
+                      setDraggingMic(null);
+                      void commitMicChannelOrder();
+                    }}
+                    onStripDragOver={(event) => {
+                      if (draggingMic && draggingMic !== mic.node_name) {
+                        event.preventDefault();
+                        moveMicChannel(draggingMic, mic.node_name);
+                      }
+                    }}
+                    onOpenSettings={() => {
+                      selectMic(mic.node_name);
+                      onOpenMic();
+                    }}
+                  />
+                ))}
               </MixGroup>
             </>
           )}
@@ -196,7 +259,7 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
             hint="Recordable copies of your channels. In OBS, add a mix as an audio input (mic/aux) - not Desktop Audio."
           >
             {extraBuses.map((bus) => (
-              <BusStrip key={bus.name} bus={bus} />
+              <BusStrip key={bus.name} bus={bus} onManageProfiles={onOpenProfiles} />
             ))}
           </MixGroup>
           </>
@@ -229,6 +292,25 @@ export function MixerBoard({ onOpenChannel }: Readonly<{ onOpenChannel: (name: s
               <Ms name={choice} />
             </button>
           ))}
+        </div>
+        <div className="modal-label">Audio format</div>
+        <div className="channel-format-choices">
+          <button
+            type="button"
+            className={"channel-format-choice" + (!channelSpatial ? " selected" : "")}
+            onClick={() => setChannelSpatial(false)}
+          >
+            <Ms name="stereo" />
+            <span><strong>Stereo</strong><small>Recommended for voice, music and general applications</small></span>
+          </button>
+          <button
+            type="button"
+            className={"channel-format-choice" + (channelSpatial ? " selected" : "")}
+            onClick={() => setChannelSpatial(true)}
+          >
+            <Ms name="spatial_audio" />
+            <span><strong>Spatial 7.1</strong><small>For games or media that can output surround audio</small></span>
+          </button>
         </div>
         <div className="modal-btns">
           <button type="button" className="modal-btn primary" onClick={createChannel} disabled={!channelLabel.trim()}>

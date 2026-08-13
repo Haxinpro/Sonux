@@ -1,6 +1,6 @@
 # Maintainer: Sonux contributors
 pkgname=sonux-bin
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="PipeWire gaming audio router, mixer, and microphone processor"
 arch=('x86_64')

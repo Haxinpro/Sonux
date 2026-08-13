@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { IconButton } from "./IconButton";
 
 /** Centered modal dialog with a dimming scrim. Escape or scrim-click closes. */
@@ -27,7 +28,7 @@ export function Modal({
   }, [open, onClose]);
 
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="modal-scrim" onClick={onClose}>
       <div
         className={"modal" + (className ? ` ${className}` : "")}
@@ -41,6 +42,7 @@ export function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -48,13 +48,14 @@ third-party notices when redistributing a fork.
 
 ## Distribution compatibility
 
-Only CachyOS has been tested. The other rows show intended Linux targets and
-planned package formats, not guaranteed compatibility.
+CachyOS and Arch Linux have been tested. The other rows show intended Linux
+targets and package formats, not guaranteed compatibility.
 
 | Distribution | Test status | Intended installation route |
 | --- | --- | --- |
 | CachyOS | Tested — built and run on CachyOS | Arch package or build from source |
-| Arch Linux, Manjaro, EndeavourOS | Not yet tested | Arch package or build from source |
+| Arch Linux | Tested — package installed and run on Arch Linux | Arch package or build from source |
+| Manjaro, EndeavourOS | Not yet tested | Arch package or build from source |
 | Ubuntu 26.04+; Debian/Mint with WirePlumber 0.5+ | Not yet tested | `.deb` package or build from source |
 | Fedora, openSUSE | Not yet tested | `.rpm` package or build from source |
 | Other PipeWire-based distributions | Not yet tested | AppImage or source build |
@@ -68,8 +69,9 @@ welcome.
 - Route applications into Game, Chat, Media, Aux, or custom channels.
 - Control channel volume, mute, output device, EQ, and playback processing.
 - Create recordable mixes for OBS and other capture software.
-- Process a microphone with gain, EQ, gate, compressor, and limiter.
-- Save profiles and use optional global mute shortcuts.
+- Process one or more microphone channels with gain, EQ, gate, compressor, and limiter.
+- Save profiles, switch them automatically by output device, and use optional global mute shortcuts.
+- Create and restore configuration backups.
 - Render Game and Media 7.1 channels to binaural stereo for headphones.
 
 ## How Sonux works
@@ -145,8 +147,9 @@ Configuration is stored as plain JSON under `~/.config/sonux`.
 ### Prebuilt packages
 
 > [!NOTE]
-> Compatibility outside CachyOS has not yet been tested. All installations
-> require PipeWire with PulseAudio compatibility and WirePlumber 0.5 or newer.
+> CachyOS and Arch Linux have been tested. Other distributions remain intended
+> targets rather than tested compatibility claims. All installations require
+> PipeWire with PulseAudio compatibility and WirePlumber 0.5 or newer.
 
 Sonux 1.0.1 downloads:
 

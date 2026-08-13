@@ -52,6 +52,7 @@ describe("setChannelVolume", () => {
     expect(invoke).toHaveBeenCalledWith("set_channel_volume", {
       sinkName: "sink_game",
       volume: 55,
+      expectedProfile: null,
     });
   });
 
@@ -64,6 +65,50 @@ describe("setChannelVolume", () => {
     vi.advanceTimersByTime(100);
 
     expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("flushes the old profile's pending edit before a manual profile switch", async () => {
+    useMixerStore.setState({
+      channels: [channel("sink_game")],
+      activeProfile: "Old",
+    });
+    await useMixerStore.getState().setChannelVolume("sink_game", 35);
+
+    await useMixerStore.getState().loadProfile("New");
+
+    expect(invoke.mock.calls[0]).toEqual([
+      "set_channel_volume",
+      { sinkName: "sink_game", volume: 35, expectedProfile: "Old" },
+    ]);
+    expect(invoke.mock.calls[1]).toEqual(["load_profile", { name: "New" }]);
+  });
+});
+
+describe("toggleMute", () => {
+  it("binds an immediate edit to the profile visible when it was sent", async () => {
+    useMixerStore.setState({
+      channels: [channel("sink_game")],
+      activeProfile: "Gaming",
+    });
+
+    await useMixerStore.getState().toggleMute("sink_game", true);
+
+    expect(invoke).toHaveBeenCalledWith("toggle_channel_mute", {
+      sinkName: "sink_game",
+      muted: true,
+      expectedProfile: "Gaming",
+    });
+  });
+});
+
+describe("fetchAppStreams", () => {
+  it("does not clear an error raised by an unrelated operation", async () => {
+    useMixerStore.setState({ error: "backup failed" });
+    invoke.mockResolvedValueOnce([]);
+
+    await useMixerStore.getState().fetchAppStreams();
+
+    expect(useMixerStore.getState().error).toBe("backup failed");
   });
 });
 
@@ -94,10 +139,12 @@ describe("toggleMonitor", () => {
   });
 });
 
-describe("setLevels", () => {
-  it("stores per-sink peaks", () => {
-    useMixerStore.getState().setLevels({ sink_game: [0.5, 0.4] });
-    expect(useMixerStore.getState().levels["sink_game"]).toEqual([0.5, 0.4]);
+describe("setMeterMode", () => {
+  it("persists the visual mode without touching audio controls", async () => {
+    await useMixerStore.getState().setMeterMode("off");
+
+    expect(useMixerStore.getState().meterMode).toBe("off");
+    expect(invoke).toHaveBeenCalledWith("set_meter_mode", { mode: "off" });
   });
 });
 
@@ -125,10 +172,12 @@ describe("setChannelEq", () => {
     expect(invoke).toHaveBeenCalledWith("set_channel_eq", {
       sinkName: "sink_game",
       config: { ...config, preamp_db: -5 },
+      expectedProfile: null,
     });
     expect(invoke).toHaveBeenCalledWith("set_channel_eq", {
       sinkName: "sink_chat",
       config,
+      expectedProfile: null,
     });
   });
 });

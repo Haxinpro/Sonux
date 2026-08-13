@@ -24,6 +24,8 @@ pub struct MixerState {
     pub eq: crate::persistence::eq::ChannelEq,
     /// Mic chain configuration (persisted to disk).
     pub mic: crate::audio::types::MicConfig,
+    /// Optional profile-specific processed microphone channels.
+    pub secondary_mics: Vec<crate::audio::types::MicConfig>,
     /// Every app identity ever observed (history + ignore list).
     pub seen: crate::persistence::seen::SeenApps,
     /// Unix seconds of the last `seen` write. The poll only saves on
@@ -38,6 +40,9 @@ pub struct MixerState {
     /// without re-reading the profile file on every mutation. Kept in step
     /// whenever the active profile or its trigger changes.
     pub active_trigger: Option<String>,
+    /// Cached deletion-protection bit of `active_profile`. Autosave rewrites
+    /// the complete profile, so this metadata must be preserved as well.
+    pub active_protected: bool,
     /// User-defined mixes (record buses), persisted to disk.
     pub buses: crate::persistence::buses::Buses,
     /// App preferences (device naming etc.), persisted to disk.

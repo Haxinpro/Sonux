@@ -1,8 +1,16 @@
 import { Ms } from "./Icons";
 
 /** Design-system switch. */
-export function Toggle({ on, onClick }: Readonly<{ on: boolean; onClick: () => void }>) {
-  return <button type="button" className={"toggle" + (on ? " on" : "")} onClick={onClick} aria-pressed={on} />;
+export function Toggle({ on, onClick, disabled = false }: Readonly<{ on: boolean; onClick: () => void; disabled?: boolean }>) {
+  return (
+    <button
+      type="button"
+      className={"toggle" + (on ? " on" : "")}
+      onClick={onClick}
+      aria-pressed={on}
+      disabled={disabled}
+    />
+  );
 }
 
 /** Card row with an icon, title/subtitle and a trailing switch. */

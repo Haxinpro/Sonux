@@ -21,17 +21,29 @@ use crate::audio::pw_native::ring::Ring;
 use crate::audio::types::{EqConfig, MicConfig, MicTestAction, MicTestStatus};
 use crate::error::SinkError;
 
-/// node.name of the virtual microphone.
+/// node.name of the permanent primary virtual microphone.
 pub const MIC_NODE: &str = "sink_mic";
-/// Internal stream names (excluded from app/stream listings).
-pub const MIC_CAPTURE_NAME: &str = "sink-internal-mic-capture";
-pub const MIC_PLAYBACK_NAME: &str = "sink-internal-mic-playback";
+
+pub fn is_mic_node(name: &str) -> bool {
+    name == MIC_NODE || name.starts_with("source_mic_")
+}
 
 const MIC_TEST_SECONDS: usize = 30;
 const MIC_TEST_RATE: usize = 48_000;
 const TEST_IDLE: u8 = 0;
 const TEST_RECORDING: u8 = 1;
 const TEST_LOOPING: u8 = 2;
+const CAPTURE_CHUNK_SAMPLES: usize = 4096;
+
+fn decode_f32_chunk(bytes: &[u8], output: &mut Vec<f32>) {
+    debug_assert!(bytes.len() / 4 <= output.capacity());
+    output.clear();
+    output.extend(
+        bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])),
+    );
+}
 
 /// A fixed-size lock-free raw microphone recorder. The capture callback
 /// records before EQ/dynamics and substitutes the saved raw samples while
@@ -261,6 +273,20 @@ mod tests {
         test.process_raw(&mut looped);
         assert_eq!(looped, [0.1, -0.2, 0.3, -0.4, 0.1, -0.2, 0.3, -0.4]);
     }
+
+    #[test]
+    fn oversized_capture_is_decoded_without_growing_rt_storage() {
+        let bytes = vec![0u8; CAPTURE_CHUNK_SAMPLES * 4 * 3];
+        let mut decoded = Vec::with_capacity(CAPTURE_CHUNK_SAMPLES);
+        let original_capacity = decoded.capacity();
+        let mut samples = 0;
+        for chunk in bytes.chunks(CAPTURE_CHUNK_SAMPLES * 4) {
+            decode_f32_chunk(chunk, &mut decoded);
+            samples += decoded.len();
+            assert_eq!(decoded.capacity(), original_capacity);
+        }
+        assert_eq!(samples, CAPTURE_CHUNK_SAMPLES * 3);
+    }
 }
 
 /// Mono F32 format pod for stream negotiation.
@@ -289,6 +315,7 @@ impl MicStreams {
     pub fn new(
         core: &pw::core::CoreRc,
         config: &MicConfig,
+        node_name: &str,
         mic_target: Option<&str>,
         levels: Arc<LevelStore>,
     ) -> Result<Self, SinkError> {
@@ -296,7 +323,7 @@ impl MicStreams {
         let params = Arc::new(MicParams::from_config(config));
         let test = Arc::new(MicTestBuffer::new());
         let level_slot = levels
-            .slot_for(MIC_NODE)
+            .slot_for(node_name)
             .ok_or_else(|| SinkError::Config("meter budget exhausted for mic".into()))?;
         // ~85 ms of headroom at 48 kHz; actual added latency is one quantum.
         let ring = Arc::new(Ring::new(4096));
@@ -307,10 +334,12 @@ impl MicStreams {
         // suspends the moment its last real consumer leaves (e.g. Discord
         // switching from the raw mic to the virtual one) - and the chain
         // starves exactly when someone starts using it.
+        let capture_name = format!("sink-internal-{node_name}-capture");
+        let playback_name = format!("sink-internal-{node_name}-playback");
         let mut capture_props = pw::properties::properties! {
             "media.type" => "Audio",
             "media.category" => "Capture",
-            "node.name" => MIC_CAPTURE_NAME,
+            "node.name" => capture_name.as_str(),
             // Never let the session manager migrate this stream (e.g. when
             // the default source changes - it could land on sink_mic and
             // feed the chain its own output). Default-follow is handled by
@@ -320,7 +349,7 @@ impl MicStreams {
         if let Some(target) = mic_target {
             capture_props.insert("target.object", target);
         }
-        let capture = pw::stream::StreamRc::new(core.clone(), MIC_CAPTURE_NAME, capture_props)
+        let capture = pw::stream::StreamRc::new(core.clone(), &capture_name, capture_props)
             .map_err(|e| err("capture stream", e))?;
 
         let capture_listener = capture
@@ -332,7 +361,7 @@ impl MicStreams {
                 ring: ring.clone(),
                 levels,
                 level_slot,
-                scratch: Vec::with_capacity(4096),
+                scratch: Vec::with_capacity(CAPTURE_CHUNK_SAMPLES),
             })
             .param_changed(|_, ctx, id, param| {
                 // Track the negotiated rate so DSP time constants are right.
@@ -357,28 +386,29 @@ impl MicStreams {
                 let valid = data.chunk().size() as usize;
                 let Some(bytes) = data.data() else { return };
 
-                let n = (valid.min(bytes.len())) / 4;
-                ctx.scratch.clear();
-                ctx.scratch.extend(
-                    bytes[..n * 4]
-                        .chunks_exact(4)
-                        .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]])),
-                );
-
-                // Record or substitute the raw hardware signal before any
-                // processing. A running loop therefore follows EQ/dynamics
-                // edits in real time.
-                ctx.test.process_raw(&mut ctx.scratch);
-                ctx.eq.process_mono_eq(&mut ctx.scratch, &ctx.params.eq);
+                let samples = valid.min(bytes.len()) / 4;
                 let settings = ctx.params.settings();
-                ctx.chain.process(&mut ctx.scratch, &settings);
+                let mut peak = 0.0f32;
+                for chunk in bytes[..samples * 4].chunks(CAPTURE_CHUNK_SAMPLES * 4) {
+                    decode_f32_chunk(chunk, &mut ctx.scratch);
+
+                    // Record or substitute the raw hardware signal before any
+                    // processing. A running loop therefore follows EQ/dynamics
+                    // edits in real time.
+                    ctx.test.process_raw(&mut ctx.scratch);
+                    ctx.eq.process_mono_eq(&mut ctx.scratch, &ctx.params.eq);
+                    ctx.chain.process(&mut ctx.scratch, &settings);
+
+                    peak = ctx
+                        .scratch
+                        .iter()
+                        .fold(peak, |maximum, sample| maximum.max(sample.abs()));
+                    ctx.ring.push(&ctx.scratch);
+                }
 
                 // Post-DSP level for the UI (mono → both meter channels).
-                let peak = ctx.scratch.iter().fold(0.0f32, |a, s| a.max(s.abs()));
                 ctx.levels.raise(ctx.level_slot, 0, peak);
                 ctx.levels.raise(ctx.level_slot, 1, peak);
-
-                ctx.ring.push(&ctx.scratch);
             })
             .register()
             .map_err(|e| err("capture listener", e))?;
@@ -403,14 +433,14 @@ impl MicStreams {
         // speakers - observed live); the loop links it to sink_mic itself.
         let playback = pw::stream::StreamRc::new(
             core.clone(),
-            MIC_PLAYBACK_NAME,
+            &playback_name,
             // NOT passive (see capture): the processed signal must reach
             // sink_mic whenever the chain is up, regardless of who is -
             // or isn't - capturing at this instant.
             pw::properties::properties! {
                 "media.type" => "Audio",
                 "media.category" => "Playback",
-                "node.name" => MIC_PLAYBACK_NAME,
+                "node.name" => playback_name.as_str(),
                 "node.autoconnect" => "false",
                 "node.dont-reconnect" => "true",
             },

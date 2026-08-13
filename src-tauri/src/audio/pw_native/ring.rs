@@ -13,8 +13,8 @@ pub struct Ring {
 }
 
 impl Ring {
-    /// Capacity is rounded up to a power of two; effective capacity is
-    /// `capacity - 1` (one slot distinguishes full from empty).
+    /// Capacity is rounded up to a power of two. Monotonic cursors distinguish
+    /// full from empty, so the complete allocation is usable.
     pub fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two().max(2);
         let buf = (0..cap).map(|_| AtomicU32::new(0)).collect::<Vec<_>>();
@@ -29,8 +29,10 @@ impl Ring {
         self.buf.len() - 1
     }
 
-    /// Push samples; drops the oldest unread data on overflow (live audio -
-    /// stale samples are worthless).
+    /// Push samples. The producer owns only `write`; on overflow the consumer
+    /// notices that it has fallen behind and skips to the freshest window.
+    /// Keeping a single writer per cursor prevents a stale producer update
+    /// from moving `read` backward after the consumer has advanced it.
     pub fn push(&self, samples: &[f32]) {
         let mask = self.mask();
         let mut w = self.write.load(Ordering::Relaxed);
@@ -39,13 +41,6 @@ impl Ring {
             w = w.wrapping_add(1);
         }
         self.write.store(w, Ordering::Release);
-        // If the producer lapped the consumer, advance the read cursor so
-        // the consumer only ever sees the freshest window.
-        let r = self.read.load(Ordering::Acquire);
-        let len = self.buf.len();
-        if w.wrapping_sub(r) > len {
-            self.read.store(w.wrapping_sub(len), Ordering::Release);
-        }
     }
 
     /// Pop up to `out.len()` samples; unfilled tail is zeroed (underrun).
@@ -54,6 +49,12 @@ impl Ring {
         let mask = self.mask();
         let w = self.write.load(Ordering::Acquire);
         let mut r = self.read.load(Ordering::Relaxed);
+        // The producer may overwrite old samples, but never touches this
+        // cursor. Catch up before reading so only its freshest full window is
+        // visible after an overrun.
+        if w.wrapping_sub(r) > self.buf.len() {
+            r = w.wrapping_sub(self.buf.len());
+        }
         let avail = w.wrapping_sub(r).min(out.len());
         for slot in out.iter_mut().take(avail) {
             *slot = f32::from_bits(self.buf[r & mask].load(Ordering::Relaxed));
@@ -92,5 +93,19 @@ mod tests {
         let n = ring.pop(&mut out);
         assert_eq!(n, 4);
         assert_eq!(out, [6.0, 7.0, 8.0, 9.0]); // freshest 4 survive
+    }
+
+    #[test]
+    fn producer_never_writes_the_consumer_cursor() {
+        let ring = Ring::new(4);
+        ring.write.store(8, Ordering::Relaxed);
+        ring.read.store(5, Ordering::Relaxed);
+
+        ring.push(&[8.0, 9.0, 10.0, 11.0]);
+
+        assert_eq!(ring.read.load(Ordering::Relaxed), 5);
+        let mut out = [0.0; 4];
+        assert_eq!(ring.pop(&mut out), 4);
+        assert_eq!(out, [8.0, 9.0, 10.0, 11.0]);
     }
 }

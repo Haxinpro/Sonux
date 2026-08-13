@@ -9,6 +9,7 @@ const SEEN_FLUSH_SECS: u64 = 15 * 60;
 /// Current channel state (volume/mute as tracked by MixerState).
 #[tauri::command]
 pub fn get_virtual_devices(state: State<'_, AppState>) -> Result<Vec<VirtualSink>, String> {
+    let _profile_operation = state.lock_profile_operation()?;
     let names = {
         let mixer = state.lock_mixer()?;
         mixer
@@ -30,12 +31,25 @@ pub fn get_virtual_devices(state: State<'_, AppState>) -> Result<Vec<VirtualSink
 
 /// All running app audio streams.
 ///
-/// Doubles as the auto-routing enforcement point (Phase 2): the frontend
-/// polls this twice per second, and any stream seen for the first time whose app has
-/// a saved assignment is moved onto its channel. Each stream is enforced
-/// once, so manual re-routing (here or in pavucontrol) isn't fought.
+/// Doubles as the auto-routing enforcement point (Phase 2): the visible UI and
+/// the native tray-state worker poll this twice per second, and any stream seen
+/// for the first time whose app has a saved assignment is moved onto its
+/// channel. Each stream is enforced once, so manual re-routing (here or in
+/// pavucontrol) isn't fought.
 #[tauri::command]
 pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, String> {
+    poll_app_streams(state.inner())
+}
+
+/// Take one application-stream snapshot and apply saved routing decisions.
+///
+/// Kept separate from the Tauri command wrapper so the native tray-state
+/// worker can preserve routing while the webview is hidden.
+pub fn poll_app_streams(state: &AppState) -> Result<Vec<AppStream>, String> {
+    // The backend snapshot and its adoption into the active profile are one
+    // transaction. Taking this after the snapshot lets a completed profile
+    // switch turn old routes into assignments in the new profile.
+    let _profile_operation = state.lock_profile_operation()?;
     let mut streams = state
         .backend
         .list_app_streams()
@@ -59,17 +73,19 @@ pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, Str
     }
 
     let now = crate::persistence::unix_now();
-
     // Phase 1: under the lock, update history and *plan* auto-routing - but do
     // no blocking work. Holding the mixer mutex across the disk save or the
     // backend move calls (each up to the native backend's 3s request timeout)
     // would stall every other command - including tray-menu building - behind
     // this fast poll, and slow-loop polls would stack up (TD-004). So we snapshot
     // the decisions here and release the guard before touching disk or PipeWire.
-    let (seen_to_save, assignments_to_save, planned) = {
+    let (seen_to_save, assignment_change, planned) = {
         let mut mixer = state.lock_mixer()?;
         let mut structural_change = false;
         let mut assignments_changed = false;
+        let mut adopted_indices = Vec::new();
+        let previous_assignments = mixer.assignments.clone();
+        let mut next_assignments = previous_assignments.clone();
         for stream in &streams {
             structural_change |= mixer.seen.upsert(
                 &stream.match_prop,
@@ -84,15 +100,12 @@ pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, Str
             // Adopt that real PipeWire route so the inactive/history view and
             // future launches do not incorrectly call the app "unrouted".
             if let Some(target) = stream.assigned_sink.as_deref() {
-                if mixer
-                    .assignments
-                    .sink_for(&stream.match_prop, &stream.match_value)
+                if next_assignments.sink_for(&stream.match_prop, &stream.match_value)
                     != Some(target)
                 {
-                    mixer
-                        .assignments
-                        .set(&stream.match_prop, &stream.match_value, target);
+                    next_assignments.set(&stream.match_prop, &stream.match_value, target);
                     assignments_changed = true;
+                    adopted_indices.push(stream.index);
                 }
             }
         }
@@ -119,9 +132,8 @@ pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, Str
                 if mixer.auto_routed.contains(&stream.index) {
                     continue;
                 }
-                if let Some(target) = mixer
-                    .assignments
-                    .sink_for(&stream.match_prop, &stream.match_value)
+                if let Some(target) =
+                    next_assignments.sink_for(&stream.match_prop, &stream.match_value)
                 {
                     if stream.assigned_sink.as_deref() != Some(target) {
                         planned.push((stream.index, target.to_string(), stream.app_name.clone()));
@@ -147,12 +159,13 @@ pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, Str
         }
 
         // Snapshot the history for an out-of-lock save, only when it changed.
-        if assignments_changed {
-            crate::commands::profiles::autosave_active(&mixer);
-        }
         (
             structural_change.then(|| mixer.seen.clone()),
-            assignments_changed.then(|| mixer.assignments.clone()),
+            assignments_changed.then_some((
+                previous_assignments,
+                next_assignments,
+                adopted_indices,
+            )),
             planned,
         )
     };
@@ -163,13 +176,26 @@ pub fn get_app_streams(state: State<'_, AppState>) -> Result<Vec<AppStream>, Str
             eprintln!("sonux: saving app history failed: {e}");
         }
     }
-    if let Some(assignments) = assignments_to_save {
-        if let Err(e) = assignments.save() {
-            eprintln!("sonux: saving externally selected app route failed: {e}");
+    if let Some((previous, next, adopted_indices)) = assignment_change {
+        let persist_result = {
+            let mixer = state.lock_mixer()?;
+            crate::commands::apps::persist_assignments(&mixer, &previous, &next)
+        };
+        if let Err(error) = persist_result {
+            // Let the next poll retry planned routing instead of retaining a
+            // handled ledger entry from a failed adoption transaction.
+            let mut mixer = state.lock_mixer()?;
+            for (index, _, _) in &planned {
+                mixer.auto_routed.remove(index);
+            }
+            for index in adopted_indices {
+                mixer.auto_routed.remove(&index);
+            }
+            return Err(format!(
+                "saving externally selected application routes failed: {error}"
+            ));
         }
-        if let Err(e) = crate::persistence::wireplumber::write(&assignments) {
-            eprintln!("sonux: updating external app routing rules failed: {e}");
-        }
+        state.lock_mixer()?.assignments = next;
     }
     for (index, target, app_name) in planned {
         match state.backend.move_stream_to_sink(index, &target) {
@@ -202,6 +228,10 @@ pub fn init_virtual_devices(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Startup reconciliation is one graph-wide transaction. Automation also
+    // applies profiles from its monitor thread, so use the shared boundary to
+    // prevent the two sequences from interleaving backend mutations.
+    let _profile_operation = state.lock_profile_operation()?;
     let (defs, prefs, active_profile) = {
         let mixer = state.lock_mixer()?;
         (
@@ -237,7 +267,7 @@ pub fn init_virtual_devices(
             .map_err(|e| e.to_string())?;
     }
 
-    let (outputs, eq, mic, buses) = {
+    let (outputs, eq, mic, secondary_mics, buses) = {
         let mut mixer = state.lock_mixer()?;
         mixer.init_defaults();
         for channel in &mut mixer.channels {
@@ -256,11 +286,13 @@ pub fn init_virtual_devices(
             mixer.outputs.clone(),
             mixer.eq.clone(),
             mixer.mic.clone(),
+            mixer.secondary_mics.clone(),
             mixer.buses.clone(),
         )
     };
+    let mut graph_errors = Vec::new();
     if let Err(e) = buses.save() {
-        eprintln!("sonux: saving mixes failed: {e}");
+        graph_errors.push(format!("save synchronized mixes: {e}"));
     }
 
     // Wire every channel to its saved output (or the system default) so
@@ -270,81 +302,166 @@ pub fn init_virtual_devices(
             .backend
             .set_channel_output(&def.name, outputs.get(&def.name))
         {
-            eprintln!("sonux: output routing for {} failed: {e}", def.name);
+            graph_errors.push(format!("route channel {}: {e}", def.name));
         }
         // Restore per-channel failover (default on, so only push the ones off).
         if !outputs.failover(&def.name) {
             if let Err(e) = state.backend.set_channel_failover(&def.name, false) {
-                eprintln!("sonux: failover setting for {} failed: {e}", def.name);
+                graph_errors.push(format!("restore failover for {}: {e}", def.name));
             }
         }
         // Restore the whole channel processor. Game/Media always need their
         // insert because their stable 7.1 device must be either HRTF-rendered
         // or safely downmixed even before a user changes any setting.
-        let config = eq.get(&def.name);
-        if let Err(e) = state.backend.set_channel_eq(&def.name, &config) {
-            eprintln!(
-                "sonux: channel processor restore for {} failed: {e}",
-                def.name
-            );
+        if state.backend_native {
+            let config = eq.get(&def.name);
+            if let Err(e) = state.backend.set_channel_eq(&def.name, &config) {
+                graph_errors.push(format!("restore processor for {}: {e}", def.name));
+            }
         }
     }
 
     // Bring up the user's mixes and their memberships.
     let names: Vec<String> = defs.channels.iter().map(|c| c.name.clone()).collect();
-    for bus in &buses.buses {
-        if let Err(e) = state
-            .backend
-            .create_bus(&bus.name, &prefs.decorate(&bus.label))
-        {
-            eprintln!("sonux: creating mix {} failed: {e}", bus.name);
-            continue;
+    if state.backend_native {
+        for bus in &buses.buses {
+            if let Err(e) = state
+                .backend
+                .create_bus(&bus.name, &prefs.decorate(&bus.label))
+            {
+                graph_errors.push(format!("create mix {}: {e}", bus.name));
+                continue;
+            }
+            if let Err(e) = state
+                .backend
+                .set_bus_members(&bus.name, &bus.effective_members(&names))
+            {
+                graph_errors.push(format!("restore members for {}: {e}", bus.name));
+            }
+            if let Err(e) = crate::commands::buses::set_bus_level(state.backend.as_ref(), bus) {
+                graph_errors.push(format!("restore level for {}: {e}", bus.name));
+            }
         }
-        if let Err(e) = state
-            .backend
-            .set_bus_members(&bus.name, &bus.effective_members(&names))
-        {
-            eprintln!("sonux: members for mix {} failed: {e}", bus.name);
-        }
-        crate::commands::buses::apply_bus_level(state.backend.as_ref(), bus);
     }
 
     // Bring the mic chain up if it was enabled last session.
-    if mic.enabled {
+    if state.backend_native && mic.enabled {
         let mut applied = mic.clone();
         applied.output_label = prefs.decorate(&mic.output_label);
         if let Err(e) = state.backend.set_mic_config(&applied) {
-            eprintln!("sonux: mic chain init failed: {e}");
-            // Keep the UI honest: no chain is running, so don't show the
-            // mic as enabled. In-memory only - the on-disk config keeps
-            // enabled=true so the next native-backend session restores it.
-            if let Ok(mut mixer) = state.lock_mixer() {
-                mixer.mic.enabled = false;
+            graph_errors.push(format!("restore primary microphone: {e}"));
+        }
+    }
+    if state.backend_native && prefs.multiple_mics {
+        for mic in secondary_mics.into_iter().filter(|mic| mic.enabled) {
+            let mut applied = mic.clone();
+            applied.output_label = prefs.decorate(&mic.output_label);
+            if let Err(error) = state.backend.set_mic_config(&applied) {
+                graph_errors.push(format!(
+                    "restore secondary microphone {}: {error}",
+                    mic.node_name
+                ));
             }
         }
     }
 
-    // First run: capture the current layout as the "Default" profile so
-    // there's always a known-good state to come back to. It also becomes
-    // the active (autosaving) profile.
-    if matches!(crate::persistence::profiles::list(), Ok(list) if list.is_empty()) {
-        let mut mixer = state.lock_mixer()?;
-        let default = crate::persistence::profiles::Profile {
-            name: "Default".to_string(),
-            channels: mixer.channels.clone(),
-            assignments: mixer.assignments.clone(),
-            outputs: mixer.outputs.clone(),
-            eq: mixer.eq.clone(),
-            trigger_device: None,
-            buses: mixer.buses.clone(),
-        };
-        match crate::persistence::profiles::save(&default) {
-            Ok(()) => {
-                mixer.active_profile = Some(default.name.clone());
-                mixer.active_trigger = None; // the Default profile has no trigger
-                let _ = crate::persistence::active::save(Some(&default.name));
+    if !graph_errors.is_empty() {
+        if let Ok(mut mixer) = state.lock_mixer() {
+            mixer.initialized = false;
+        }
+        return Err(format!(
+            "audio graph initialization incomplete: {}",
+            graph_errors.join("; ")
+        ));
+    }
+
+    // First run or recovery from an externally emptied profile directory:
+    // capture the current layout as "Default" so there is always a known-good
+    // state to return to. It also becomes the active (autosaving) profile.
+    let profile_list = crate::persistence::profiles::list().map_err(|error| {
+        if let Ok(mut mixer) = state.lock_mixer() {
+            mixer.initialized = false;
+        }
+        format!("list profiles during startup: {error}")
+    })?;
+    if profile_list.is_empty() {
+        let default = {
+            let mixer = state.lock_mixer()?;
+            crate::persistence::profiles::Profile {
+                name: "Default".to_string(),
+                protected: true,
+                channels: mixer.channels.clone(),
+                mic: Some(mixer.mic.clone()),
+                secondary_mics: mixer.secondary_mics.clone(),
+                assignments: mixer.assignments.clone(),
+                outputs: mixer.outputs.clone(),
+                eq: mixer.eq.clone(),
+                trigger_device: None,
+                buses: mixer.buses.clone(),
             }
-            Err(e) => eprintln!("sonux: creating Default profile failed: {e}"),
+        };
+        if let Err(error) = crate::persistence::profiles::save(&default) {
+            state.lock_mixer()?.initialized = false;
+            return Err(format!("creating Default profile failed: {error}"));
+        }
+        if let Err(error) = crate::persistence::active::save(Some(&default.name)) {
+            let marker_rollback = crate::persistence::active::save(active_profile.as_deref());
+            let restored_marker = marker_rollback.is_ok();
+            let profile_rollback = if restored_marker {
+                crate::persistence::profiles::delete(&default.name)
+            } else {
+                Ok(())
+            };
+            state.lock_mixer()?.initialized = false;
+            let mut message = format!("saving active Default profile failed: {error}");
+            if let Err(rollback_error) = marker_rollback {
+                message.push_str(&format!(
+                    "; restoring the previous active marker also failed: {rollback_error}"
+                ));
+            }
+            if !restored_marker {
+                message.push_str(
+                    "; retained Default because the active marker may still reference it",
+                );
+            }
+            if let Err(rollback_error) = profile_rollback {
+                message.push_str(&format!(
+                    "; removing the unbound Default profile also failed: {rollback_error}"
+                ));
+            }
+            return Err(message);
+        }
+        let mut mixer = state.lock_mixer()?;
+        mixer.active_profile = Some(default.name);
+        mixer.active_trigger = None; // the Default profile has no trigger
+        mixer.active_protected = true;
+    }
+    // Upgrade older installations that predate the protected fallback flag.
+    // Prefer the conventional Default profile; otherwise retain the first
+    // profile in the stable alphabetical listing.
+    if let Ok(profiles) = crate::persistence::profiles::list() {
+        if !profiles.iter().any(|profile| profile.protected) {
+            if let Some(fallback) = profiles
+                .iter()
+                .find(|profile| profile.name == "Default")
+                .or_else(|| profiles.first())
+            {
+                if let Ok(mut profile) = crate::persistence::profiles::load(&fallback.name) {
+                    profile.protected = true;
+                    match crate::persistence::profiles::save(&profile) {
+                        Ok(()) => {
+                            if let Ok(mut mixer) = state.lock_mixer() {
+                                if mixer.active_profile.as_deref() == Some(fallback.name.as_str()) {
+                                    mixer.active_protected = true;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("sonux: protecting fallback profile failed: {error}")
+                        }
+                    }
+                }
+            }
         }
     }
     // Profiles/active state may have changed since the tray was built.
@@ -400,6 +517,19 @@ pub fn get_channel_failover(
         .collect())
 }
 
+fn output_edit_failure(
+    error: impl std::fmt::Display,
+    rollbacks: &[(&str, Result<(), crate::error::SinkError>)],
+) -> String {
+    let mut message = error.to_string();
+    for (action, rollback) in rollbacks {
+        if let Err(rollback_error) = rollback {
+            message.push_str(&format!("; {action} also failed: {rollback_error}"));
+        }
+    }
+    message
+}
+
 /// Route a channel to an output device; empty `output_name` = follow the
 /// system default. Persisted across restarts.
 #[tauri::command]
@@ -407,24 +537,68 @@ pub fn set_channel_output(
     state: State<'_, AppState>,
     sink_name: String,
     output_name: String,
+    expected_profile: Option<String>,
 ) -> Result<(), String> {
+    let _profile_operation = state.lock_expected_profile_operation(expected_profile.as_deref())?;
+    state.ensure_known_channel(&sink_name)?;
     let output = if output_name.is_empty() {
         None
     } else {
         Some(output_name)
+    };
+    if let Some(output) = output.as_deref() {
+        state.ensure_output_device(output)?;
+    }
+    let (old_output, old_outputs, outputs) = {
+        let mixer = state.lock_mixer()?;
+        let old_output = mixer.outputs.get(&sink_name).map(str::to_string);
+        let old_outputs = mixer.outputs.clone();
+        let mut outputs = old_outputs.clone();
+        outputs.set(&sink_name, output.clone());
+        (old_output, old_outputs, outputs)
     };
     state
         .backend
         .set_channel_output(&sink_name, output.as_deref())
         .map_err(|e| e.to_string())?;
 
-    let outputs = {
-        let mut mixer = state.lock_mixer()?;
-        mixer.outputs.set(&sink_name, output);
-        crate::commands::profiles::autosave_active(&mixer);
-        mixer.outputs.clone()
-    };
-    outputs.save().map_err(|e| e.to_string())
+    if let Err(error) = outputs.save() {
+        return Err(output_edit_failure(
+            error,
+            &[
+                ("restoring the previous output file", old_outputs.save()),
+                (
+                    "restoring the previous live output",
+                    state
+                        .backend
+                        .set_channel_output(&sink_name, old_output.as_deref()),
+                ),
+            ],
+        ));
+    }
+    {
+        let mixer = state.lock_mixer()?;
+        if let Err(error) = crate::commands::profiles::save_active_with_outputs(&mixer, &outputs) {
+            return Err(output_edit_failure(
+                error,
+                &[
+                    (
+                        "restoring the previous active profile",
+                        crate::commands::profiles::save_active_with_outputs(&mixer, &old_outputs),
+                    ),
+                    ("restoring the previous output file", old_outputs.save()),
+                    (
+                        "restoring the previous live output",
+                        state
+                            .backend
+                            .set_channel_output(&sink_name, old_output.as_deref()),
+                    ),
+                ],
+            ));
+        }
+    }
+    state.lock_mixer()?.outputs = outputs;
+    Ok(())
 }
 
 /// Turn a channel's auto-failover on or off. Off = the channel plays only on
@@ -435,19 +609,56 @@ pub fn set_channel_failover(
     state: State<'_, AppState>,
     sink_name: String,
     enabled: bool,
+    expected_profile: Option<String>,
 ) -> Result<(), String> {
+    let _profile_operation = state.lock_expected_profile_operation(expected_profile.as_deref())?;
+    state.ensure_known_channel(&sink_name)?;
+    let (old_enabled, old_outputs, outputs) = {
+        let mixer = state.lock_mixer()?;
+        let old_enabled = mixer.outputs.failover(&sink_name);
+        let old_outputs = mixer.outputs.clone();
+        let mut outputs = old_outputs.clone();
+        outputs.set_failover(&sink_name, enabled);
+        (old_enabled, old_outputs, outputs)
+    };
     state
         .backend
         .set_channel_failover(&sink_name, enabled)
         .map_err(|e| e.to_string())?;
 
-    let outputs = {
-        let mut mixer = state.lock_mixer()?;
-        mixer.outputs.set_failover(&sink_name, enabled);
-        crate::commands::profiles::autosave_active(&mixer);
-        mixer.outputs.clone()
-    };
-    outputs.save().map_err(|e| e.to_string())
+    if let Err(error) = outputs.save() {
+        return Err(output_edit_failure(
+            error,
+            &[
+                ("restoring the previous output file", old_outputs.save()),
+                (
+                    "restoring the previous live failover",
+                    state.backend.set_channel_failover(&sink_name, old_enabled),
+                ),
+            ],
+        ));
+    }
+    {
+        let mixer = state.lock_mixer()?;
+        if let Err(error) = crate::commands::profiles::save_active_with_outputs(&mixer, &outputs) {
+            return Err(output_edit_failure(
+                error,
+                &[
+                    (
+                        "restoring the previous active profile",
+                        crate::commands::profiles::save_active_with_outputs(&mixer, &old_outputs),
+                    ),
+                    ("restoring the previous output file", old_outputs.save()),
+                    (
+                        "restoring the previous live failover",
+                        state.backend.set_channel_failover(&sink_name, old_enabled),
+                    ),
+                ],
+            ));
+        }
+    }
+    state.lock_mixer()?.outputs = outputs;
+    Ok(())
 }
 
 /// Destroy all virtual sinks. Called before the app exits.

@@ -83,13 +83,40 @@ impl PipeWireBackend {
         rx.recv_timeout(REQUEST_TIMEOUT)
             .map_err(|_| SinkError::Config("pipewire request timed out".into()))?
     }
+
+    /// Queue an acknowledgement after the caller has already received the
+    /// readiness result. No second response is needed: waiting for one would
+    /// either reintroduce a deadline race or let a stalled loop hang callers.
+    fn send_ack(
+        &self,
+        build: impl FnOnce(mpsc::Sender<Result<(), SinkError>>) -> Cmd,
+    ) -> Result<(), SinkError> {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        self.sender
+            .lock()
+            .map_err(|_| SinkError::Config("pipewire sender lock poisoned".into()))?
+            .send(build(tx))
+            .map_err(|_| SinkError::Config("pipewire loop is gone".into()))
+    }
 }
 
 impl AudioBackend for PipeWireBackend {
     fn create_virtual_sink(&self, name: &str, label: &str) -> Result<(), SinkError> {
-        let name = name.to_string();
+        let owned_name = name.to_string();
         let label = label.to_string();
-        self.request(|reply| Cmd::CreateSink { name, label, reply })
+        let result = self.request(|reply| Cmd::CreateSink {
+            name: owned_name,
+            label,
+            reply,
+        });
+        if result.is_err() {
+            // A request can time out after PipeWire accepted the proxy but
+            // before its registry global appeared. Cancel it so callers do
+            // not leave an unmanaged node behind after reporting failure.
+            let _ = self.destroy_virtual_sink(name);
+        }
+        result
     }
 
     fn destroy_virtual_sink(&self, name: &str) -> Result<(), SinkError> {
@@ -178,9 +205,17 @@ impl AudioBackend for PipeWireBackend {
     }
 
     fn create_bus(&self, name: &str, label: &str) -> Result<(), SinkError> {
-        let name = name.to_string();
+        let owned_name = name.to_string();
         let label = label.to_string();
-        self.request(|reply| Cmd::CreateBus { name, label, reply })
+        let result = self.request(|reply| Cmd::CreateBus {
+            name: owned_name,
+            label,
+            reply,
+        });
+        if result.is_err() {
+            let _ = self.destroy_bus(name);
+        }
+        result
     }
 
     fn destroy_bus(&self, name: &str) -> Result<(), SinkError> {
@@ -213,11 +248,45 @@ impl AudioBackend for PipeWireBackend {
 
     fn set_mic_config(&self, config: &crate::audio::types::MicConfig) -> Result<(), SinkError> {
         let config = config.clone();
-        self.request(|reply| Cmd::SetMicConfig { config, reply })
+        let node_name = config.node_name.clone();
+        let result = self.request(|reply| Cmd::SetMicConfig { config, reply });
+        match result {
+            Ok(()) => {
+                // A successful channel send and a recv_timeout deadline can
+                // race. Keep the previous config until this explicit receipt
+                // acknowledgement reaches the loop thread.
+                let finalize_name = node_name.clone();
+                self.send_ack(|reply| Cmd::FinalizePendingMic {
+                    node_name: finalize_name,
+                    reply,
+                })?;
+                Ok(())
+            }
+            Err(error) => {
+                // The proxy may have been accepted while its registry global
+                // was still pending. Explicitly cancel so a late global cannot
+                // make this failed request live behind the command layer's back.
+                let cancel_name = node_name.clone();
+                if let Err(cancel_error) = self.request(|reply| Cmd::CancelPendingMic {
+                    node_name: cancel_name,
+                    reply,
+                }) {
+                    return Err(SinkError::Config(format!(
+                        "{error}; cancelling timed-out microphone request also failed: {cancel_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
     }
 
-    fn mic_test(&self, action: MicTestAction) -> Result<MicTestStatus, SinkError> {
-        self.request(|reply| Cmd::MicTest { action, reply })
+    fn mic_test(&self, node_name: &str, action: MicTestAction) -> Result<MicTestStatus, SinkError> {
+        let node_name = node_name.to_string();
+        self.request(|reply| Cmd::MicTest {
+            node_name,
+            action,
+            reply,
+        })
     }
 
     fn channel_test(

@@ -110,6 +110,7 @@ mod tests {
     #[test]
     fn snapshot_excludes_hardware_and_live_controls() {
         let config = MicConfig {
+            node_name: "sink_mic".into(),
             enabled: true,
             input_device: Some("hardware".into()),
             output_label: "Voice".into(),

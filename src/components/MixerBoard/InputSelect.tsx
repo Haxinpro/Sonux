@@ -25,7 +25,7 @@ export function InputSelect({
   const shortLabel = value === null ? "Default" : label.split(" ")[0];
 
   return (
-    <div style={{ position: "relative" }}>
+    <div className="strip-input-select" style={{ position: "relative" }}>
       <button
         type="button"
         className="strip-route strip-route-btn"

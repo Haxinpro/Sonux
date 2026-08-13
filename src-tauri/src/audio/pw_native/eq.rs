@@ -6,13 +6,13 @@
 //! `src/lib/eqMath.ts` for the UI curve - keep both in sync.
 //!
 //! Threading model: the command thread writes band parameters into
-//! `EqParams` (plain atomics) and bumps a generation counter with Release
-//! ordering; the RT capture callback owns an `EqEngine` and redesigns its
-//! coefficients only when an Acquire load of the generation sees a change.
+//! `EqParams` (plain atomics) between odd/even generation changes; the RT
+//! capture callback owns an `EqEngine` and redesigns its coefficients only
+//! after copying a stable, even generation.
 //! Coefficient design (a few sin/cos) off the hot path per *change*, not
 //! per buffer, and never a lock on the RT thread.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use crate::audio::types::{EqBand, EqBandKind, EqConfig, PlaybackMode, MAX_EQ_BANDS};
 
@@ -208,11 +208,10 @@ impl AtomicBand {
 
 /// Live-tunable EQ parameters shared with the RT capture callback.
 ///
-/// Single writer (the loop thread handling commands), single reader (the RT
-/// callback). Field writes are Relaxed; the trailing Release bump of
-/// `generation` publishes them all to the reader's Acquire load - no locks,
-/// no retries, and torn *intermediate* states are impossible because the
-/// reader only redesigns after seeing a new generation.
+/// Single writer (the loop thread handling commands), any number of readers.
+/// An odd generation means a write is in progress; an even generation is a
+/// stable snapshot. Readers retry if the generation changes around their
+/// relaxed field loads, keeping the RT path lock-free without mixing updates.
 pub struct EqParams {
     enabled: AtomicBool,
     preamp_bits: AtomicU32,
@@ -234,6 +233,26 @@ pub struct EqParams {
     spatial_tuning_bits: AtomicU32,
     spatial_distance_bits: AtomicU32,
     generation: AtomicU64,
+}
+
+struct EqSnapshot {
+    generation: u64,
+    enabled: bool,
+    preamp_db: f32,
+    bands: [EqBand; MAX_EQ_BANDS],
+    band_count: usize,
+    tone_bass_db: f32,
+    tone_voice_db: f32,
+    tone_treble_db: f32,
+    boost_db: f32,
+    gate_enabled: bool,
+    gate_threshold_db: f32,
+    comp_enabled: bool,
+    comp_threshold_db: f32,
+    comp_ratio: f32,
+    limiter_enabled: bool,
+    limiter_ceiling_db: f32,
+    headphones: bool,
 }
 
 impl EqParams {
@@ -266,6 +285,8 @@ impl EqParams {
 
     /// Publish a new config to the RT reader (command thread only).
     pub fn apply(&self, config: &EqConfig) {
+        let previous = self.generation.fetch_add(1, Ordering::SeqCst);
+        debug_assert_eq!(previous & 1, 0, "EqParams must have a single writer");
         let count = config.bands.len().min(MAX_EQ_BANDS);
         for (slot, band) in self.bands.iter().zip(config.bands.iter()) {
             slot.store(band);
@@ -304,20 +325,68 @@ impl EqParams {
             .store(config.spatial_tuning.to_bits(), Ordering::Relaxed);
         self.spatial_distance_bits
             .store(config.spatial_distance.to_bits(), Ordering::Relaxed);
-        self.generation.fetch_add(1, Ordering::Release);
+        self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
+    fn snapshot_if_changed(&self, seen_generation: u64) -> Option<EqSnapshot> {
+        loop {
+            let generation = self.generation.load(Ordering::SeqCst);
+            if generation & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if generation == seen_generation {
+                return None;
+            }
+
+            let snapshot = EqSnapshot {
+                generation,
+                enabled: self.enabled.load(Ordering::Relaxed),
+                preamp_db: f32::from_bits(self.preamp_bits.load(Ordering::Relaxed)),
+                bands: std::array::from_fn(|index| self.bands[index].load()),
+                band_count: self.band_count.load(Ordering::Relaxed).min(MAX_EQ_BANDS),
+                tone_bass_db: f32::from_bits(self.tone_bass_bits.load(Ordering::Relaxed)),
+                tone_voice_db: f32::from_bits(self.tone_voice_bits.load(Ordering::Relaxed)),
+                tone_treble_db: f32::from_bits(self.tone_treble_bits.load(Ordering::Relaxed)),
+                boost_db: f32::from_bits(self.boost_bits.load(Ordering::Relaxed)),
+                gate_enabled: self.gate.load(Ordering::Relaxed),
+                gate_threshold_db: f32::from_bits(self.gate_threshold_bits.load(Ordering::Relaxed)),
+                comp_enabled: self.comp.load(Ordering::Relaxed),
+                comp_threshold_db: f32::from_bits(self.comp_threshold_bits.load(Ordering::Relaxed)),
+                comp_ratio: f32::from_bits(self.comp_ratio_bits.load(Ordering::Relaxed)),
+                limiter_enabled: self.limiter.load(Ordering::Relaxed),
+                limiter_ceiling_db: f32::from_bits(
+                    self.limiter_ceiling_bits.load(Ordering::Relaxed),
+                ),
+                headphones: self.playback_mode.load(Ordering::Relaxed) == 1
+                    && !self.spatial.load(Ordering::Relaxed),
+            };
+            // Keep every field load before the closing generation check.
+            fence(Ordering::SeqCst);
+            if self.generation.load(Ordering::SeqCst) == generation {
+                return Some(snapshot);
+            }
+        }
     }
 
     pub(crate) fn spatial_snapshot(&self) -> (bool, f32, f32, bool) {
-        (
-            self.spatial.load(Ordering::Relaxed),
-            f32::from_bits(self.spatial_tuning_bits.load(Ordering::Relaxed)),
-            f32::from_bits(self.spatial_distance_bits.load(Ordering::Relaxed)),
-            self.playback_mode.load(Ordering::Relaxed) == 1,
-        )
+        loop {
+            let generation = self.generation.load(Ordering::SeqCst);
+            if generation & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let snapshot = (
+                self.spatial.load(Ordering::Relaxed),
+                f32::from_bits(self.spatial_tuning_bits.load(Ordering::Relaxed)),
+                f32::from_bits(self.spatial_distance_bits.load(Ordering::Relaxed)),
+                self.playback_mode.load(Ordering::Relaxed) == 1,
+            );
+            fence(Ordering::SeqCst);
+            if self.generation.load(Ordering::SeqCst) == generation {
+                return snapshot;
+            }
+        }
     }
 }
 
@@ -421,31 +490,27 @@ impl EqEngine {
     }
 
     fn refresh(&mut self, params: &EqParams) {
-        let generation = params.generation();
-        if generation == self.seen_generation {
+        let Some(snapshot) = params.snapshot_if_changed(self.seen_generation) else {
             return;
-        }
-        self.seen_generation = generation;
-        self.enabled = params.enabled.load(Ordering::Relaxed);
-        let preamp_db = f32::from_bits(params.preamp_bits.load(Ordering::Relaxed));
-        self.preamp_linear = 10.0f32.powf(preamp_db / 20.0);
-        self.boost_linear = db_to_linear(f32::from_bits(params.boost_bits.load(Ordering::Relaxed)));
-        self.gate_enabled = params.gate.load(Ordering::Relaxed);
-        self.gate_threshold_db = f32::from_bits(params.gate_threshold_bits.load(Ordering::Relaxed));
-        self.comp_enabled = params.comp.load(Ordering::Relaxed);
-        self.comp_threshold_db = f32::from_bits(params.comp_threshold_bits.load(Ordering::Relaxed));
-        self.comp_ratio = f32::from_bits(params.comp_ratio_bits.load(Ordering::Relaxed));
-        self.limiter_enabled = params.limiter.load(Ordering::Relaxed);
-        self.limiter_ceiling_db =
-            f32::from_bits(params.limiter_ceiling_bits.load(Ordering::Relaxed));
+        };
+        self.seen_generation = snapshot.generation;
+        self.enabled = snapshot.enabled;
+        self.preamp_linear = 10.0f32.powf(snapshot.preamp_db / 20.0);
+        self.boost_linear = db_to_linear(snapshot.boost_db);
+        self.gate_enabled = snapshot.gate_enabled;
+        self.gate_threshold_db = snapshot.gate_threshold_db;
+        self.comp_enabled = snapshot.comp_enabled;
+        self.comp_threshold_db = snapshot.comp_threshold_db;
+        self.comp_ratio = snapshot.comp_ratio;
+        self.limiter_enabled = snapshot.limiter_enabled;
+        self.limiter_ceiling_db = snapshot.limiter_ceiling_db;
         // The HRTF already contains the interaural filtering and delay. The
         // gentle stereo crossfeed remains useful for ordinary stereo
         // channels, but applying it after binauralization would blur cues.
-        self.headphones = params.playback_mode.load(Ordering::Relaxed) == 1
-            && !params.spatial.load(Ordering::Relaxed);
-        self.count = params.band_count.load(Ordering::Relaxed).min(MAX_EQ_BANDS);
+        self.headphones = snapshot.headphones;
+        self.count = snapshot.band_count;
         for i in 0..self.count {
-            let band = params.bands[i].load();
+            let band = snapshot.bands[i];
             self.coeffs[i] = BiquadCoeffs::design(
                 band.kind,
                 band.freq_hz,
@@ -457,21 +522,21 @@ impl EqEngine {
         self.tone_coeffs[0] = BiquadCoeffs::design(
             EqBandKind::LowShelf,
             120.0,
-            f32::from_bits(params.tone_bass_bits.load(Ordering::Relaxed)),
+            snapshot.tone_bass_db,
             0.71,
             self.sample_rate,
         );
         self.tone_coeffs[1] = BiquadCoeffs::design(
             EqBandKind::Peaking,
             1200.0,
-            f32::from_bits(params.tone_voice_bits.load(Ordering::Relaxed)),
+            snapshot.tone_voice_db,
             0.8,
             self.sample_rate,
         );
         self.tone_coeffs[2] = BiquadCoeffs::design(
             EqBandKind::HighShelf,
             8000.0,
-            f32::from_bits(params.tone_treble_bits.load(Ordering::Relaxed)),
+            snapshot.tone_treble_db,
             0.71,
             self.sample_rate,
         );
@@ -755,6 +820,101 @@ mod tests {
         assert_eq!(engine.count, 1);
         let expected = BiquadCoeffs::design(EqBandKind::HighPass, 80.0, 0.0, 0.71, SR);
         assert_eq!(engine.coeffs[0], expected);
+    }
+
+    #[test]
+    fn concurrent_parameter_reads_never_mix_generations() {
+        let first = EqConfig {
+            enabled: true,
+            preamp_db: -3.0,
+            bands: vec![band(EqBandKind::Peaking, 400.0, -2.0, 0.7)],
+            tone_bass_db: -1.0,
+            tone_voice_db: -2.0,
+            tone_treble_db: -3.0,
+            boost_db: -4.0,
+            gate_enabled: false,
+            gate_threshold_db: -51.0,
+            comp_enabled: false,
+            comp_threshold_db: -21.0,
+            comp_ratio: 2.0,
+            limiter_enabled: false,
+            limiter_ceiling_db: -2.0,
+            playback_mode: PlaybackMode::Speakers,
+            spatial_enabled: false,
+            spatial_tuning: 0.1,
+            spatial_distance: 0.2,
+        };
+        let second = EqConfig {
+            enabled: false,
+            preamp_db: 3.0,
+            bands: vec![band(EqBandKind::HighPass, 800.0, 4.0, 1.4)],
+            tone_bass_db: 1.0,
+            tone_voice_db: 2.0,
+            tone_treble_db: 3.0,
+            boost_db: 4.0,
+            gate_enabled: true,
+            gate_threshold_db: -31.0,
+            comp_enabled: true,
+            comp_threshold_db: -11.0,
+            comp_ratio: 5.0,
+            limiter_enabled: true,
+            limiter_ceiling_db: -0.5,
+            playback_mode: PlaybackMode::Headphones,
+            spatial_enabled: false,
+            spatial_tuning: 0.8,
+            spatial_distance: 0.9,
+        };
+        let params = std::sync::Arc::new(EqParams::from_config(&first));
+        let writer_params = params.clone();
+        let writer_first = first.clone();
+        let writer_second = second.clone();
+        let writer = std::thread::spawn(move || {
+            for iteration in 0..20_000 {
+                let config = if iteration % 2 == 0 {
+                    &writer_second
+                } else {
+                    &writer_first
+                };
+                writer_params.apply(config);
+            }
+        });
+
+        for _ in 0..20_000 {
+            let snapshot = params
+                .snapshot_if_changed(u64::MAX)
+                .expect("the generation cannot equal the refresh sentinel");
+            let expected = if snapshot.preamp_db == first.preamp_db {
+                &first
+            } else {
+                assert_eq!(snapshot.preamp_db, second.preamp_db);
+                &second
+            };
+            assert_eq!(snapshot.enabled, expected.enabled);
+            assert_eq!(snapshot.band_count, expected.bands.len());
+            assert_eq!(snapshot.bands[0], expected.bands[0]);
+            assert_eq!(snapshot.tone_bass_db, expected.tone_bass_db);
+            assert_eq!(snapshot.tone_voice_db, expected.tone_voice_db);
+            assert_eq!(snapshot.tone_treble_db, expected.tone_treble_db);
+            assert_eq!(snapshot.boost_db, expected.boost_db);
+            assert_eq!(snapshot.gate_enabled, expected.gate_enabled);
+            assert_eq!(snapshot.gate_threshold_db, expected.gate_threshold_db);
+            assert_eq!(snapshot.comp_enabled, expected.comp_enabled);
+            assert_eq!(snapshot.comp_threshold_db, expected.comp_threshold_db);
+            assert_eq!(snapshot.comp_ratio, expected.comp_ratio);
+            assert_eq!(snapshot.limiter_enabled, expected.limiter_enabled);
+            assert_eq!(snapshot.limiter_ceiling_db, expected.limiter_ceiling_db);
+            assert_eq!(
+                snapshot.headphones,
+                expected.playback_mode == PlaybackMode::Headphones && !expected.spatial_enabled
+            );
+
+            let spatial = params.spatial_snapshot();
+            assert!(
+                spatial == (false, 0.1, 0.2, false) || spatial == (false, 0.8, 0.9, true),
+                "mixed spatial generation: {spatial:?}"
+            );
+        }
+        writer.join().expect("writer thread succeeds");
     }
 
     #[test]

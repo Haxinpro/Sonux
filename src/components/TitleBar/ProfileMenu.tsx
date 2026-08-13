@@ -9,9 +9,14 @@ import { Popover } from "../Popover";
  * Profile picker. Profiles are live-bound: every mixer change autosaves
  * into the active profile, so rows just switch - there is no Save button.
  */
-export function ProfileMenu({ compact = false }: Readonly<{ compact?: boolean }>) {
+export function ProfileMenu({
+  compact = false,
+  onManageProfiles,
+}: Readonly<{
+  compact?: boolean;
+  onManageProfiles: () => void;
+}>) {
   const [open, setOpen] = useState(false);
-  const [newName, setNewName] = useState("");
   /** Profile whose auto-switch (trigger) panel is expanded. */
   const [triggerFor, setTriggerFor] = useState<string | null>(null);
   const profiles = useMixerStore((s) => s.profiles);
@@ -20,19 +25,10 @@ export function ProfileMenu({ compact = false }: Readonly<{ compact?: boolean }>
   const loadProfile = useMixerStore((s) => s.loadProfile);
   const deleteProfile = useMixerStore((s) => s.deleteProfile);
   const setProfileTrigger = useMixerStore((s) => s.setProfileTrigger);
-  const createBlankProfile = useMixerStore((s) => s.createBlankProfile);
 
   const close = () => {
     setOpen(false);
     setTriggerFor(null);
-    setNewName("");
-  };
-
-  const create = () => {
-    const name = newName.trim();
-    if (!name) return;
-    void createBlankProfile(name);
-    close();
   };
 
   const triggerLabel = (device: string | null) => {
@@ -131,28 +127,15 @@ export function ProfileMenu({ compact = false }: Readonly<{ compact?: boolean }>
         })}
 
         <div className="menu-sep" />
-        <div className="menu-save">
-          <input
-            className="menu-input"
-            placeholder="New profile name…"
-            value={newName}
-            maxLength={64}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") create();
-            }}
-          />
-          <button
-            type="button"
-            className="select"
-            onClick={create}
-            disabled={!newName.trim()}
-            title="Create a fresh profile (default channels, no routing) and switch to it"
-          >
-            <Ms name="add" />
-            <span>Create</span>
-          </button>
-        </div>
+        <MenuItem
+          icon="settings"
+          onClick={() => {
+            close();
+            onManageProfiles();
+          }}
+        >
+          Manage profiles
+        </MenuItem>
       </Popover>
     </div>
   );

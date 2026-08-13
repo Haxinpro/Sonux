@@ -12,6 +12,10 @@ use crate::error::SinkError;
 
 /// `owner_module` value pactl uses when a sink has no owning module.
 const PA_INVALID_INDEX: u32 = u32::MAX;
+/// Marker placed in every fallback module Sonux creates.  A matching module
+/// type and sink name are not an ownership proof: another client can choose
+/// the same name.  Reconciliation and teardown require this marker too.
+const SONUX_MODULE_MARKER: &str = "sonux.owner=sonux";
 
 /// Phase 1 backend: drives the audio system through the `pactl` CLI, which
 /// works against both PulseAudio and PipeWire (via pipewire-pulse).
@@ -120,23 +124,68 @@ impl PactlBackend {
             .map_err(|_| SinkError::Parse("module index table lock poisoned".into()))
     }
 
+    fn ensure_visible_app_stream(stream_index: u32) -> Result<(), SinkError> {
+        let inputs: Vec<PactlSinkInput> = Self::query("sink-inputs")?;
+        inputs
+            .iter()
+            .any(|input| input.index == stream_index && is_visible_app_input(input))
+            .then_some(())
+            .ok_or_else(|| SinkError::UnknownSink(format!("application stream {stream_index}")))
+    }
+
     /// Find the module index of a `module-null-sink` owning `sink_name` by
     /// scanning the live module list. Fallback for when the in-memory table
     /// has no entry (e.g. sink left over from a previous crashed run).
     fn find_null_sink_module(sink_name: &str) -> Result<Option<u32>, SinkError> {
         let modules: Vec<PactlModule> = Self::query("modules")?;
-        let needle = format!("sink_name={sink_name}");
-        Ok(modules
-            .iter()
-            .find(|m| {
-                m.name == "module-null-sink"
-                    && m.argument
-                        .as_deref()
-                        .map(|a| a.split_whitespace().any(|tok| tok == needle))
-                        .unwrap_or(false)
-            })
-            .map(|m| m.index))
+        Ok(null_sink_module(&modules, sink_name))
     }
+
+    fn remove_orphaned_loopbacks(sink_name: &str) -> Result<(), SinkError> {
+        let modules: Vec<PactlModule> = Self::query("modules")?;
+        for index in owned_loopback_modules(&modules, sink_name) {
+            Self::run(&["unload-module", &index.to_string()])?;
+        }
+        Ok(())
+    }
+}
+
+fn null_sink_module(modules: &[PactlModule], sink_name: &str) -> Option<u32> {
+    let needle = format!("sink_name={sink_name}");
+    modules
+        .iter()
+        .find(|module| {
+            module.name == "module-null-sink"
+                && module.argument.as_deref().is_some_and(|args| {
+                    let args: Vec<_> = args.split_whitespace().collect();
+                    args.iter().any(|arg| *arg == needle) && has_ownership_marker(&args)
+                })
+        })
+        .map(|module| module.index)
+}
+
+fn has_ownership_marker(args: &[&str]) -> bool {
+    let sink_marker = format!("sink_properties={SONUX_MODULE_MARKER}");
+    let loopback_marker = format!("sink_input_properties={SONUX_MODULE_MARKER}");
+    args.iter().any(|argument| {
+        let argument = argument.trim_matches('"');
+        argument == SONUX_MODULE_MARKER || argument == sink_marker || argument == loopback_marker
+    })
+}
+
+fn owned_loopback_modules(modules: &[PactlModule], sink_name: &str) -> Vec<u32> {
+    let source = format!("source={sink_name}.monitor");
+    modules
+        .iter()
+        .filter(|module| {
+            module.name == "module-loopback"
+                && module.argument.as_deref().is_some_and(|args| {
+                    let args: Vec<_> = args.split_whitespace().collect();
+                    args.iter().any(|arg| *arg == source) && has_ownership_marker(&args)
+                })
+        })
+        .map(|module| module.index)
+        .collect()
 }
 
 /// Parse a pactl `value_percent` string like "87%" into a percentage.
@@ -155,21 +204,29 @@ fn prop<'a>(props: &'a HashMap<String, serde_json::Value>, key: &str) -> Option<
     props.get(key).and_then(|v| v.as_str())
 }
 
+fn is_visible_app_input(input: &PactlSinkInput) -> bool {
+    !crate::audio::types::should_hide_app(|key| prop(&input.properties, key).map(str::to_string))
+}
+
 impl AudioBackend for PactlBackend {
     fn create_virtual_sink(&self, name: &str, label: &str) -> Result<(), SinkError> {
         // Idempotency: if the sink already exists (e.g. previous run crashed
         // before teardown), adopt its module instead of loading a duplicate.
         if let Some(existing) = Self::list_sinks()?.iter().find(|s| s.name == name) {
-            match existing.owner_module {
-                Some(idx) if idx != PA_INVALID_INDEX => {
-                    self.lock_modules()?.insert(name.to_string(), idx);
+            let owned_module = Self::find_null_sink_module(name)?;
+            match (existing.owner_module, owned_module) {
+                (Some(owner), Some(module)) if owner == module || owner == PA_INVALID_INDEX => {
+                    // A crashed process can leave its loopback modules alive.
+                    // Remove exactly the marked dependants before normal
+                    // output setup creates one replacement.
+                    Self::remove_orphaned_loopbacks(name)?;
+                    self.lock_modules()?.insert(name.to_string(), module);
                     return Ok(());
                 }
                 _ => {
-                    if let Some(idx) = Self::find_null_sink_module(name)? {
-                        self.lock_modules()?.insert(name.to_string(), idx);
-                        return Ok(());
-                    }
+                    return Err(SinkError::Config(format!(
+                        "audio node name is already owned by another module: {name}"
+                    )));
                 }
             }
         }
@@ -186,7 +243,11 @@ impl AudioBackend for PactlBackend {
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
         let sink_name = format!("sink_name={name}");
-        let sink_props = format!("sink_properties=device.description=\"{desc}\"");
+        // Keep the description and ownership marker inside one quoted
+        // `sink_properties` proplist value. Without the outer quotes the
+        // server parses `sonux.owner=...` as an unsupported module argument.
+        let sink_props =
+            format!("sink_properties=\"device.description=\\\"{desc}\\\" {SONUX_MODULE_MARKER}\"");
         let stdout = if is_spatial_channel(name) {
             Self::run(&[
                 "load-module",
@@ -209,6 +270,19 @@ impl AudioBackend for PactlBackend {
     }
 
     fn destroy_virtual_sink(&self, name: &str) -> Result<(), SinkError> {
+        let loopback = self
+            .loopbacks
+            .lock()
+            .map_err(|_| SinkError::Parse("loopback table lock poisoned".into()))?
+            .get(name)
+            .copied();
+        if let Some(index) = loopback {
+            Self::run(&["unload-module", &index.to_string()])?;
+            self.loopbacks
+                .lock()
+                .map_err(|_| SinkError::Parse("loopback table lock poisoned".into()))?
+                .remove(name);
+        }
         let tracked = self.lock_modules()?.remove(name);
         let module_index = match tracked {
             Some(idx) => Some(idx),
@@ -237,11 +311,7 @@ impl AudioBackend for PactlBackend {
         let inputs: Vec<PactlSinkInput> = Self::query("sink-inputs")?;
         Ok(inputs
             .into_iter()
-            .filter(|input| {
-                !crate::audio::types::should_hide_app(|key| {
-                    prop(&input.properties, key).map(str::to_string)
-                })
-            })
+            .filter(is_visible_app_input)
             .map(|input| {
                 // Shared identity resolution: skips generic/wrapper names
                 // (e.g. "WEBRTC VoiceEngine" → the Discord binary). The
@@ -317,6 +387,10 @@ impl AudioBackend for PactlBackend {
     }
 
     fn move_stream_to_sink(&self, stream_index: u32, sink_name: &str) -> Result<(), SinkError> {
+        Self::ensure_visible_app_stream(stream_index)?;
+        if !sink_name.is_empty() && !self.lock_modules()?.contains_key(sink_name) {
+            return Err(SinkError::UnknownSink(sink_name.to_string()));
+        }
         // Empty sink name = unassign: hand the stream back to the default sink.
         let target = if sink_name.is_empty() {
             "@DEFAULT_SINK@"
@@ -328,6 +402,7 @@ impl AudioBackend for PactlBackend {
     }
 
     fn set_app_volume(&self, stream_index: u32, volume_percent: u8) -> Result<(), SinkError> {
+        Self::ensure_visible_app_stream(stream_index)?;
         Self::run(&[
             "set-sink-input-volume",
             &stream_index.to_string(),
@@ -421,29 +496,16 @@ impl AudioBackend for PactlBackend {
         sink_name: &str,
         output_name: Option<&str>,
     ) -> Result<(), SinkError> {
-        // Replace any existing loopback for this channel - by asking the
-        // server, not just our own table. A previous run that died without
-        // teardown leaves its modules loaded, and stacking a fresh set on
-        // top plays the channel once per leftover. (This assumes a single
-        // Sink instance - sink names are deterministic, so two live
-        // instances would already be fighting over the nodes themselves.)
-        {
-            let mut loopbacks = self
-                .loopbacks
-                .lock()
-                .map_err(|_| SinkError::Parse("loopback table lock poisoned".into()))?;
-            loopbacks.remove(sink_name);
-        }
-        let needle = format!("source={sink_name}.monitor");
-        if let Ok(stdout) = Self::run(&["list", "modules", "short"]) {
-            for line in stdout.lines() {
-                if line.contains("module-loopback") && line.contains(&needle) {
-                    if let Some(index) = line.split_whitespace().next() {
-                        // Best effort: the module may already be gone.
-                        let _ = Self::run(&["unload-module", index]);
-                    }
-                }
-            }
+        // Only unload a loopback created and tracked by this backend. Module
+        // arguments are not an ownership boundary: another client may use
+        // the same managed monitor source for its own recording or routing.
+        let previous = self
+            .loopbacks
+            .lock()
+            .map_err(|_| SinkError::Parse("loopback table lock poisoned".into()))?
+            .remove(sink_name);
+        if let Some(index) = previous {
+            Self::run(&["unload-module", &index.to_string()])?;
         }
 
         let target = output_name.unwrap_or("@DEFAULT_SINK@");
@@ -453,6 +515,7 @@ impl AudioBackend for PactlBackend {
             &format!("source={sink_name}.monitor"),
             &format!("sink={target}"),
             "source_dont_move=true",
+            &format!("sink_input_properties={SONUX_MODULE_MARKER}"),
         ])?;
         let module_index: u32 = stdout
             .trim()
@@ -519,5 +582,90 @@ mod tests {
             prop(&inputs[0].properties, "application.name"),
             Some("Firefox")
         );
+    }
+
+    #[test]
+    fn module_lookup_requires_exact_name_type_and_ownership_marker() {
+        let modules = vec![
+            PactlModule {
+                index: 1,
+                name: "module-alsa-card".to_string(),
+                argument: Some("sink_name=sink_game".to_string()),
+            },
+            PactlModule {
+                index: 2,
+                name: "module-null-sink".to_string(),
+                argument: Some("sink_name=sink_game_extra".to_string()),
+            },
+            PactlModule {
+                index: 3,
+                name: "module-null-sink".to_string(),
+                argument: Some("sink_name=sink_game channels=2".to_string()),
+            },
+            PactlModule {
+                index: 4,
+                name: "module-null-sink".to_string(),
+                argument: Some(format!(
+                    "sink_name=sink_game sink_properties={SONUX_MODULE_MARKER}"
+                )),
+            },
+        ];
+        assert_eq!(null_sink_module(&modules, "sink_game"), Some(4));
+        assert_eq!(null_sink_module(&modules, "sink_chat"), None);
+        let lookalike = [PactlModule {
+            index: 5,
+            name: "module-null-sink".to_string(),
+            argument: Some(format!(
+                "sink_name=sink_game sink_properties=x{SONUX_MODULE_MARKER}y"
+            )),
+        }];
+        assert_eq!(null_sink_module(&lookalike, "sink_game"), None);
+    }
+
+    #[test]
+    fn orphan_loopback_lookup_requires_exact_source_and_marker() {
+        let modules = vec![
+            PactlModule {
+                index: 1,
+                name: "module-loopback".to_string(),
+                argument: Some(format!(
+                    "source=sink_game.monitor sink=@DEFAULT_SINK@ sink_input_properties={SONUX_MODULE_MARKER}"
+                )),
+            },
+            PactlModule {
+                index: 2,
+                name: "module-loopback".to_string(),
+                argument: Some("source=sink_game.monitor sink=x".to_string()),
+            },
+            PactlModule {
+                index: 3,
+                name: "module-loopback".to_string(),
+                argument: Some(format!(
+                    "source=sink_game.monitor.extra sink=x sink_input_properties={SONUX_MODULE_MARKER}"
+                )),
+            },
+            PactlModule {
+                index: 4,
+                name: "module-loopback".to_string(),
+                argument: Some(format!(
+                    "source=sink_game.monitor sink=x unrelated=x{SONUX_MODULE_MARKER}y"
+                )),
+            },
+        ];
+        assert_eq!(owned_loopback_modules(&modules, "sink_game"), vec![1]);
+    }
+
+    #[test]
+    fn visible_app_input_filter_rejects_hidden_streams() {
+        let visible: PactlSinkInput = serde_json::from_str(
+            r#"{"index":1,"sink":2,"mute":false,"volume":{},"properties":{"application.name":"Game"}}"#,
+        )
+        .unwrap();
+        let hidden: PactlSinkInput = serde_json::from_str(
+            r#"{"index":2,"sink":2,"mute":false,"volume":{},"properties":{"media.role":"Event"}}"#,
+        )
+        .unwrap();
+        assert!(is_visible_app_input(&visible));
+        assert!(!is_visible_app_input(&hidden));
     }
 }
