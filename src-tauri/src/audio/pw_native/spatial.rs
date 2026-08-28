@@ -720,7 +720,7 @@ impl SpatialEngine {
 
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>, params: SpatialRenderParams) {
         output.clear();
-        for frame in input.chunks_exact(SURROUND_CHANNELS) {
+        for frame in input.as_chunks::<SURROUND_CHANNELS>().0 {
             self.pending[self.pending_len].copy_from_slice(frame);
             self.pending_len += 1;
             if self.pending_len == BLOCK {

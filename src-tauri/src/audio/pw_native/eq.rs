@@ -553,7 +553,7 @@ impl EqEngine {
         let crossfeed_alpha =
             1.0 - (-2.0 * std::f32::consts::PI * CROSSFEED_HZ / self.sample_rate).exp();
 
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let mut stereo = [frame[0], frame[1]];
             if self.enabled {
                 for (ch, sample) in stereo.iter_mut().enumerate() {
@@ -1076,7 +1076,7 @@ mod tests {
         let mut buf: Vec<f32> = (0..48000).flat_map(|_| [0.5f32, 0.25]).collect();
         engine.process_interleaved(&mut buf, &params);
         let tail = &buf[buf.len() - 2000..];
-        for frame in tail.chunks_exact(2) {
+        for frame in tail.as_chunks::<2>().0 {
             assert!((frame[0] / frame[1] - 2.0).abs() < 1e-4);
         }
     }

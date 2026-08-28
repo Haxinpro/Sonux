@@ -79,7 +79,7 @@ impl MeterHandle {
                 let mut peaks = [0.0f32; 2];
                 // f32 interleaved. The 7.1 channel groups are folded into
                 // the two UI bars; centre and LFE raise both sides.
-                for (i, raw) in bytes.chunks_exact(4).enumerate() {
+                for (i, raw) in bytes.as_chunks::<4>().0.iter().enumerate() {
                     let v = f32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]).abs();
                     let ch = i % ctx.channels;
                     if ctx.channels == SURROUND_CHANNELS {
