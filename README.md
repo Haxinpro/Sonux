@@ -28,14 +28,13 @@ for upstream and bundled-asset notices.
 Sonux is an independent project and is not affiliated with or endorsed by
 SteelSeries.
 
-## What's new in 1.1.0
+## What's new in 1.1.1
 
-Version 1.1.0 adds full profile management and automatic switching, validated
+Version 1.1.1 is a maintenance update that keeps Sonux building cleanly with
+current Rust toolchains and refreshes its frontend dependencies. Version 1.1
+includes full profile management and automatic switching, validated
 configuration backups, multiple processed microphone channels, live dBFS
-meters, spatial custom channels, and improved device routing and failover
-controls. It also hardens PipeWire recovery, configuration persistence, and
-concurrent profile switching, and makes the main controls and dialogs more
-keyboard accessible.
+meters, spatial custom channels, and improved device routing and failover.
 
 See the [changelog](CHANGELOG.md) for the complete update notes and upgrade
 information.

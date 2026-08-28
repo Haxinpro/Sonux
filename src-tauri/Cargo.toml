@@ -1,7 +1,7 @@
 [package]
 name = "sonux"
 default-run = "sonux"
-version = "1.1.0"
+version = "1.1.1"
 description = "Linux-native audio routing and mixing for PipeWire"
 edition = "2021"
 rust-version = "1.88"

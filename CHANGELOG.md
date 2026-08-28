@@ -2,6 +2,18 @@
 
 This file summarizes user-visible changes in each Sonux release.
 
+## [1.1.1] - 29/08/2026
+
+Sonux 1.1.1 is a maintenance update with no intended audio or interface
+behavior changes.
+
+### Maintenance
+
+- Restored clean builds under Rust 1.98 by adopting the equivalent slice
+  chunking API available since the project's Rust 1.88 minimum.
+- Updated Material Symbols, Zustand, Vite's React plugin, Vite, and Vitest to
+  their reviewed minor or patch releases.
+
 ## [1.1.0] - 2026-08-13
 
 Sonux 1.1.0 expands profile, microphone, metering, and recovery support while
@@ -56,4 +68,5 @@ strengthening the native PipeWire audio path introduced in earlier releases.
   and package formats listed in the README are intended targets, not verified
   compatibility.
 
+[1.1.1]: https://github.com/Haxinpro/Sonux/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Haxinpro/Sonux/compare/v1.0.1...v1.1.0
