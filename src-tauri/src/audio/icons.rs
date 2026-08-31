@@ -4,7 +4,7 @@
 //! to actual files across the freedesktop icon dirs (user, system,
 //! Flatpak exports). Results are cached per identity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -20,6 +20,9 @@ struct DesktopEntry {
     icon: Option<String>,
     /// Basename of the Exec command, lowercased.
     exec_base: Option<String>,
+    /// Steam app id extracted from a `steam://run(gameid)/...` launcher.
+    /// This distinguishes games whose desktop entries all execute `steam`.
+    steam_app_id: Option<String>,
     wm_class_lower: Option<String>,
 }
 
@@ -29,6 +32,9 @@ pub struct Resolved {
     pub icon_path: Option<String>,
     /// Polished display name from the desktop entry, when matched.
     pub display_name: Option<String>,
+    /// Stable desktop-file id (without `.desktop`) used to group the raw
+    /// PipeWire identities that belong to one installed application.
+    pub desktop_id: Option<String>,
 }
 
 struct Resolver {
@@ -115,6 +121,7 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopEntry> {
         return None;
     }
     let name = name?;
+    let steam_app_id = exec.as_deref().and_then(steam_app_id_from_exec);
     let exec_base = exec.and_then(|e| {
         let first = e.split_whitespace().next()?;
         Path::new(first)
@@ -130,7 +137,18 @@ fn parse_desktop_file(path: &Path) -> Option<DesktopEntry> {
         name,
         icon,
         exec_base,
+        steam_app_id,
         wm_class_lower: wm_class.map(|w| w.to_lowercase()),
+    })
+}
+
+fn steam_app_id_from_exec(exec: &str) -> Option<String> {
+    exec.split_whitespace().find_map(|argument| {
+        let suffix = argument
+            .strip_prefix("steam://rungameid/")
+            .or_else(|| argument.strip_prefix("steam://run/"))?;
+        let app_id: String = suffix.chars().take_while(char::is_ascii_digit).collect();
+        (!app_id.is_empty()).then_some(app_id)
     })
 }
 
@@ -211,8 +229,62 @@ fn exe_basename(pid: u32) -> Option<String> {
         .map(|f| f.to_string_lossy().to_lowercase())
 }
 
+/// Steam exports the owning game id into native and Proton game processes.
+/// It is stronger than an inherited Steam cgroup/GIO launcher identity and
+/// maps directly to the app id embedded in generated game desktop entries.
+fn process_steam_app_id(pid: u32) -> Option<String> {
+    let environ = fs::read(format!("/proc/{pid}/environ")).ok()?;
+    for key in [b"SteamAppId=".as_slice(), b"SteamGameId=".as_slice()] {
+        for variable in environ.split(|byte| *byte == 0) {
+            let Some(value) = variable.strip_prefix(key) else {
+                continue;
+            };
+            if !value.is_empty() && value.iter().all(u8::is_ascii_digit) {
+                return Some(String::from_utf8_lossy(value).into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Return a match only when the fingerprint identifies exactly one desktop
+/// entry. Launchers such as Steam and Wine are shared by many game shortcuts;
+/// choosing the first `Exec=steam` entry would assign an arbitrary game's
+/// name and icon to every launcher/helper stream.
+fn unique_desktop(
+    desktops: &[DesktopEntry],
+    predicate: impl Fn(&DesktopEntry) -> bool,
+) -> Option<&DesktopEntry> {
+    let mut matches = desktops.iter().filter(|desktop| predicate(desktop));
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn desktop_for_identity<'a>(
+    desktops: &'a [DesktopEntry],
+    app_lower: &str,
+    binary_lower: Option<&str>,
+) -> Option<&'a DesktopEntry> {
+    unique_desktop(desktops, |desktop| {
+        desktop.wm_class_lower.as_deref() == Some(app_lower)
+    })
+    .or_else(|| unique_desktop(desktops, |desktop| desktop.name_lower == app_lower))
+    .or_else(|| {
+        let binary = binary_lower?;
+        unique_desktop(desktops, |desktop| {
+            desktop.exec_base.as_deref() == Some(binary)
+        })
+    })
+    .or_else(|| {
+        unique_desktop(desktops, |desktop| {
+            desktop.exec_base.as_deref() == Some(app_lower)
+        })
+    })
+}
+
 fn load_desktops() -> Vec<DesktopEntry> {
     let mut entries = Vec::new();
+    let mut seen_ids = HashSet::new();
     for dir in desktop_dirs() {
         let Ok(read) = fs::read_dir(&dir) else {
             continue;
@@ -221,7 +293,12 @@ fn load_desktops() -> Vec<DesktopEntry> {
             let path = file.path();
             if path.extension().is_some_and(|e| e == "desktop") {
                 if let Some(entry) = parse_desktop_file(&path) {
-                    entries.push(entry);
+                    // XDG roots are ordered from the user's overrides to
+                    // system fallbacks. The first desktop-file ID shadows
+                    // later copies and must count only once for uniqueness.
+                    if seen_ids.insert(entry.id.clone()) {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -263,6 +340,50 @@ fn icon_name_to_path(name: &str) -> Option<String> {
     None
 }
 
+fn desktop_for_process<'a>(
+    desktops: &'a [DesktopEntry],
+    steam_app_id: Option<&str>,
+    desktop_ids: &[String],
+    exe: Option<&str>,
+) -> Option<&'a DesktopEntry> {
+    if let Some(steam_app_id) = steam_app_id {
+        // Do not fall back to an inherited Steam launcher identity when the
+        // process explicitly identifies a game. If no matching shortcut is
+        // installed, leaving it unresolved is safer than merging all games.
+        return unique_desktop(desktops, |desktop| {
+            desktop.steam_app_id.as_deref() == Some(steam_app_id)
+        });
+    }
+    desktops
+        .iter()
+        .find(|desktop| {
+            !desktop.id.is_empty() && desktop_ids.iter().any(|candidate| candidate == &desktop.id)
+        })
+        .or_else(|| {
+            let exe = exe?;
+            unique_desktop(desktops, |desktop| {
+                desktop.exec_base.as_deref() == Some(exe)
+            })
+        })
+}
+
+fn select_canonical_desktop<'a>(
+    steam_app_id: Option<&str>,
+    pid_desktop: Option<&'a DesktopEntry>,
+    hinted_desktop: Option<&'a DesktopEntry>,
+    identity_desktop: Option<&'a DesktopEntry>,
+) -> (Option<&'a DesktopEntry>, Option<String>) {
+    if let Some(steam_app_id) = steam_app_id {
+        // The game id is authoritative and stable even when the user has no
+        // generated desktop shortcut. A matching shortcut enriches the name
+        // and icon only; inherited Steam identities are never a fallback.
+        return (pid_desktop, Some(format!("steam-app:{steam_app_id}")));
+    }
+    let desktop = pid_desktop.or(hinted_desktop).or(identity_desktop);
+    let desktop_id = desktop.map(|entry| entry.id.clone());
+    (desktop, desktop_id)
+}
+
 /// Resolve the best icon path + display name for a stream.
 ///
 /// `binary` is the process binary when the identity came from it;
@@ -272,7 +393,14 @@ pub fn resolve(
     binary: Option<&str>,
     icon_hint: Option<&str>,
     pid: Option<u32>,
+    desktop_id_hint: Option<&str>,
 ) -> Resolved {
+    // Fingerprint before consulting the cache. Different Steam/Proton games
+    // can expose the same helper name and icon, so `pid.is_some()` alone is
+    // not a safe cache discriminator.
+    let pid_desktop_ids = pid.map(desktop_id_candidates).unwrap_or_default();
+    let pid_steam_app_id = pid.and_then(process_steam_app_id);
+    let pid_exe = pid.and_then(exe_basename);
     let resolver = RESOLVER.get_or_init(|| {
         Mutex::new(Resolver {
             desktops: load_desktops(),
@@ -283,55 +411,57 @@ pub fn resolve(
         return Resolved::default();
     };
 
-    // PID presence is part of the key (not the PID itself - it changes per
-    // run): a name-only resolution from history must not shadow the more
-    // accurate /proc-based one for a live stream, or vice versa.
-    let key = format!("{app_name}\0{binary:?}\0{icon_hint:?}\0{}", pid.is_some());
+    // Cache stable process fingerprints rather than the changing PID itself.
+    let key = format!(
+        "{app_name}\0{binary:?}\0{icon_hint:?}\0{desktop_id_hint:?}\0{pid_steam_app_id:?}\0{pid_desktop_ids:?}\0{pid_exe:?}"
+    );
     if let Some(hit) = resolver.cache.get(&key) {
         return hit.clone();
     }
 
     let app_lower = app_name.to_lowercase();
     let binary_lower = binary.map(str::to_lowercase);
+    let hinted_steam_app_id = desktop_id_hint
+        .and_then(|hint| hint.strip_prefix("steam-app:"))
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()));
+    let canonical_steam_app_id = pid_steam_app_id.as_deref().or(hinted_steam_app_id);
 
     // The PID beats name-matching: the process's cgroup scope, flatpak id,
     // or launch environment names its desktop entry exactly, and the real
     // exe path sees through wrapper binaries.
-    let pid_desktop = pid.and_then(|p| {
-        let candidates = desktop_id_candidates(p);
-        resolver
-            .desktops
-            .iter()
-            .find(|d| !d.id.is_empty() && candidates.iter().any(|c| c == &d.id))
-            .or_else(|| {
-                let exe = exe_basename(p)?;
-                resolver
-                    .desktops
-                    .iter()
-                    .find(|d| d.exec_base.as_deref() == Some(exe.as_str()))
-            })
+    let hinted_desktop = desktop_id_hint.and_then(|hint| {
+        let hint = hint.to_lowercase();
+        resolver.desktops.iter().find(|desktop| desktop.id == hint)
     });
 
-    let desktop = pid_desktop.or_else(|| {
-        resolver.desktops.iter().find(|d| {
-            d.wm_class_lower.as_deref() == Some(app_lower.as_str())
-                || (binary_lower.is_some() && d.exec_base == binary_lower)
-                || d.name_lower == app_lower
-                || d.exec_base.as_deref() == Some(app_lower.as_str())
-        })
-    });
+    let pid_desktop = desktop_for_process(
+        &resolver.desktops,
+        canonical_steam_app_id,
+        &pid_desktop_ids,
+        pid_exe.as_deref(),
+    );
 
-    // Icon candidates in priority order: explicit stream hint, the desktop
-    // entry's icon, the binary name, a slug of the display name.
+    let identity_desktop =
+        desktop_for_identity(&resolver.desktops, &app_lower, binary_lower.as_deref());
+    let (desktop, desktop_id) = select_canonical_desktop(
+        canonical_steam_app_id,
+        pid_desktop,
+        hinted_desktop,
+        identity_desktop,
+    );
+
+    // A uniquely/canonically matched desktop entry represents the application
+    // better than a helper stream's hint (for example steamwebhelper claiming
+    // a Chromium icon). Fall back through the raw hint and identity names.
     let slug = app_lower.replace(' ', "-");
     let mut candidates: Vec<&str> = Vec::new();
-    if let Some(hint) = icon_hint {
-        candidates.push(hint);
-    }
     if let Some(d) = desktop {
         if let Some(icon) = d.icon.as_deref() {
             candidates.push(icon);
         }
+    }
+    if let Some(hint) = icon_hint {
+        candidates.push(hint);
     }
     if let Some(b) = binary_lower.as_deref() {
         candidates.push(b);
@@ -341,8 +471,14 @@ pub fn resolve(
     let resolved = Resolved {
         icon_path: candidates.iter().find_map(|c| icon_name_to_path(c)),
         display_name: desktop.map(|d| d.name.clone()),
+        desktop_id,
     };
-    resolver.cache.insert(key, resolved.clone());
+    // `/proc` metadata can be briefly unavailable while a process starts or
+    // exits. Cache successful live identity enrichment, but let live misses
+    // retry instead of freezing an incomplete result for the whole session.
+    if pid.is_none() || resolved.desktop_id.is_some() {
+        resolver.cache.insert(key, resolved.clone());
+    }
     resolved
 }
 
@@ -372,6 +508,7 @@ mod tests {
         let entry = parse_desktop_file(&path).expect("parses");
         assert_eq!(entry.name, "Cool App");
         assert_eq!(entry.exec_base.as_deref(), Some("coolapp"));
+        assert_eq!(entry.steam_app_id, None);
         assert_eq!(entry.wm_class_lower.as_deref(), Some("coolapp"));
         assert_eq!(entry.icon.as_deref(), Some("coolapp"));
     }
@@ -383,5 +520,92 @@ mod tests {
         let path = dir.join("hidden.desktop");
         fs::write(&path, "[Desktop Entry]\nName=Hidden\nNoDisplay=true\n").expect("writes");
         assert!(parse_desktop_file(&path).is_none());
+    }
+
+    fn desktop(id: &str, name: &str, exec_base: &str) -> DesktopEntry {
+        DesktopEntry {
+            id: id.to_string(),
+            name: name.to_string(),
+            name_lower: name.to_lowercase(),
+            icon: None,
+            exec_base: Some(exec_base.to_string()),
+            steam_app_id: None,
+            wm_class_lower: None,
+        }
+    }
+
+    fn steam_desktop(id: &str, name: &str, app_id: &str) -> DesktopEntry {
+        let mut entry = desktop(id, name, "steam");
+        entry.steam_app_id = Some(app_id.to_string());
+        entry
+    }
+
+    #[test]
+    fn steam_shortcuts_keep_their_distinct_game_ids() {
+        assert_eq!(
+            steam_app_id_from_exec("steam steam://rungameid/431960"),
+            Some("431960".to_string())
+        );
+        assert_eq!(
+            steam_app_id_from_exec("steam steam://run/916440 --silent"),
+            Some("916440".to_string())
+        );
+        assert_eq!(steam_app_id_from_exec("steam"), None);
+
+        let desktops = vec![
+            steam_desktop("wallpaper engine", "Wallpaper Engine", "431960"),
+            steam_desktop("anno 1800", "Anno 1800", "916440"),
+        ];
+        assert_eq!(
+            desktop_for_process(&desktops, Some("431960"), &[], None)
+                .expect("Wallpaper Engine")
+                .name,
+            "Wallpaper Engine"
+        );
+        assert_eq!(
+            desktop_for_process(&desktops, Some("916440"), &[], None)
+                .expect("Anno 1800")
+                .name,
+            "Anno 1800"
+        );
+        assert!(desktop_for_process(&desktops, Some("999999"), &["steam".into()], None).is_none());
+
+        let steam_launcher = desktop("steam", "Steam", "steam");
+        let (matched, canonical_id) = select_canonical_desktop(
+            Some("999999"),
+            None,
+            Some(&steam_launcher),
+            Some(&steam_launcher),
+        );
+        assert!(matched.is_none());
+        assert_eq!(canonical_id.as_deref(), Some("steam-app:999999"));
+    }
+
+    #[test]
+    fn exact_name_beats_shared_launcher_executables() {
+        let desktops = vec![
+            desktop("wallpaper-engine", "Wallpaper Engine", "steam"),
+            desktop("steam", "Steam", "steam"),
+            desktop("anno-1800", "Anno 1800", "steam"),
+        ];
+        let resolved = desktop_for_identity(&desktops, "steam", None).expect("Steam entry");
+        assert_eq!(resolved.id, "steam");
+    }
+
+    #[test]
+    fn ambiguous_launcher_executable_never_selects_an_arbitrary_game() {
+        let desktops = vec![
+            desktop("wallpaper-engine", "Wallpaper Engine", "steam"),
+            desktop("anno-1800", "Anno 1800", "steam"),
+        ];
+        assert!(desktop_for_identity(&desktops, "unknown helper", Some("steam")).is_none());
+    }
+
+    #[test]
+    fn unique_executable_remains_a_valid_fallback() {
+        let desktops = vec![desktop("org.example.player", "Player", "example-player")];
+        let resolved = desktop_for_identity(&desktops, "playback", Some("example-player"))
+            .expect("unique executable");
+        assert_eq!(resolved.id, "org.example.player");
     }
 }

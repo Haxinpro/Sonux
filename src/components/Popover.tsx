@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 interface PopoverProps {
+  id?: string;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
@@ -23,7 +24,7 @@ const GAP = 6;
  * the parent element of the marker span (call sites wrap trigger+Popover
  * in a relative container, which keeps working unchanged).
  */
-export function Popover({ open, onClose, children, side = "bottom", align = "start", style }: Readonly<PopoverProps>) {
+export function Popover({ id, open, onClose, children, side = "bottom", align = "start", style }: Readonly<PopoverProps>) {
   const markerRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<CSSProperties | null>(null);
@@ -45,7 +46,7 @@ export function Popover({ open, onClose, children, side = "bottom", align = "sta
     let left: number;
     if (align === "center") {
       left = rect.left + rect.width / 2 - menuRect.width / 2;
-    } else if (align === "end") {
+    } else if ((align === "end") !== (document.documentElement.dir === "rtl")) {
       left = rect.right - menuRect.width;
     } else {
       left = rect.left;
@@ -79,11 +80,31 @@ export function Popover({ open, onClose, children, side = "bottom", align = "sta
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
-    menuRef.current?.focus();
+    const menu = menuRef.current;
+    const selected = menu?.querySelector<HTMLElement>('[aria-checked="true"]');
+    (selected ?? menu)?.focus();
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onCloseRef.current();
+        return;
+      }
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+        const menu = menuRef.current;
+        if (!menu) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.matches("input, select, textarea, [contenteditable=true]")) return;
+        const items = [...menu.querySelectorAll<HTMLElement>('[role^="menuitem"], .menu-item')];
+        if (items.length === 0) return;
+        const active = document.activeElement as HTMLElement | null;
+        if (active !== menu && !items.includes(active as HTMLElement)) return;
+        e.preventDefault();
+        const current = items.indexOf(active as HTMLElement);
+        const next = e.key === "Home" ? 0
+          : e.key === "End" ? items.length - 1
+            : e.key === "ArrowUp" ? (current <= 0 ? items.length - 1 : current - 1)
+              : (current + 1) % items.length;
+        items[next].focus();
         return;
       }
       if (e.key !== "Tab") return;
@@ -125,6 +146,7 @@ export function Popover({ open, onClose, children, side = "bottom", align = "sta
           <>
             <div className="scrim" onClick={onClose} />
             <div
+              id={id}
               ref={menuRef}
               className="menu"
               role="menu"

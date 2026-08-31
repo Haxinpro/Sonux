@@ -335,6 +335,132 @@ describe("fetchAppStreams", () => {
   });
 });
 
+describe("startup synchronization", () => {
+  const startupSnapshot = {
+    activeProfile: "Default",
+    channels: [channel("sink_game")],
+    appStreams: [],
+    outputDevices: [],
+    channelOutputs: {},
+    resolvedOutputs: {},
+    channelFailover: {},
+    eqConfigs: { sink_game: defaultEqConfig() },
+    micConfigs: [],
+    inputDevices: [],
+    micClients: [],
+    seenApps: [],
+    profiles: [{ name: "Default", trigger_device: null, protected: true }],
+    buses: [],
+  };
+
+  it("allows the slow poll to retry transient graph initialization failures", async () => {
+    let initializationAttempts = 0;
+    invoke.mockImplementation((command: string) => {
+      if (command === "init_virtual_devices") {
+        initializationAttempts += 1;
+        return initializationAttempts === 1
+          ? Promise.reject("PipeWire was still starting")
+          : Promise.resolve(undefined);
+      }
+      if (command === "get_profile_snapshot") return Promise.resolve(startupSnapshot);
+      if (command === "get_backend_info") return Promise.resolve({ native: true });
+      if (command === "get_prefs") {
+        return Promise.resolve({
+          onboarded: true,
+          balance_a: null,
+          balance_b: null,
+          show_balance: true,
+          multiple_mics: false,
+          meter_mode: "fps_60",
+        });
+      }
+      return Promise.reject(`unexpected command: ${command}`);
+    });
+
+    await useMixerStore.getState().initialize();
+    expect(useMixerStore.getState().initialized).toBe(false);
+    expect(useMixerStore.getState().initializing).toBe(false);
+
+    await useMixerStore.getState().initialize();
+    expect(useMixerStore.getState().initialized).toBe(true);
+    expect(useMixerStore.getState().startupSynchronized).toBe(true);
+    expect(useMixerStore.getState().error).toBeNull();
+  });
+
+  it("recovers every startup slice after a transient snapshot failure", async () => {
+    let snapshotAttempts = 0;
+    invoke.mockImplementation((command: string) => {
+      if (command === "init_virtual_devices") return Promise.resolve(undefined);
+      if (command === "get_profile_snapshot") {
+        snapshotAttempts += 1;
+        return snapshotAttempts === 1
+          ? Promise.reject("temporary snapshot failure")
+          : Promise.resolve(startupSnapshot);
+      }
+      if (command === "get_backend_info") return Promise.resolve({ native: true });
+      if (command === "get_prefs") {
+        return Promise.resolve({
+          onboarded: false,
+          balance_a: "sink_game",
+          balance_b: null,
+          show_balance: true,
+          multiple_mics: false,
+          meter_mode: "fps_30",
+        });
+      }
+      return Promise.reject(`unexpected command: ${command}`);
+    });
+
+    await useMixerStore.getState().initialize();
+    expect(useMixerStore.getState().initialized).toBe(true);
+    expect(useMixerStore.getState().startupSynchronized).toBe(false);
+    expect(useMixerStore.getState().error).toContain("temporary snapshot failure");
+
+    // The visible-window slow poll invokes the same reconciliation action.
+    await useMixerStore.getState().synchronizeStartupState();
+
+    const state = useMixerStore.getState();
+    expect(state.startupSynchronized).toBe(true);
+    expect(state.startupSyncError).toBeNull();
+    expect(state.error).toBeNull();
+    expect(state.channels[0].name).toBe("sink_game");
+    expect(state.eqConfigs.sink_game).toEqual(defaultEqConfig());
+    expect(state.profiles[0].name).toBe("Default");
+    expect(state.activeProfile).toBe("Default");
+    expect(state.backendNative).toBe(true);
+    expect(state.balanceA).toBe("sink_game");
+    expect(state.meterMode).toBe("fps_30");
+    expect(state.showOnboarding).toBe(true);
+  });
+
+  it("keeps one reconciliation in flight until every sibling IPC settles", async () => {
+    let resolveSnapshot!: (value: unknown) => void;
+    let snapshotCalls = 0;
+    invoke.mockImplementation((command: string) => {
+      if (command === "get_profile_snapshot") {
+        snapshotCalls += 1;
+        return new Promise((resolve) => { resolveSnapshot = resolve; });
+      }
+      if (command === "get_backend_info") return Promise.reject("temporary backend-info failure");
+      if (command === "get_prefs") return Promise.resolve({});
+      return Promise.reject(`unexpected command: ${command}`);
+    });
+    useMixerStore.setState({ initialized: true });
+
+    const first = useMixerStore.getState().synchronizeStartupState();
+    await Promise.resolve();
+    expect(useMixerStore.getState().startupSynchronizing).toBe(true);
+
+    await useMixerStore.getState().synchronizeStartupState();
+    expect(snapshotCalls).toBe(1);
+
+    resolveSnapshot(startupSnapshot);
+    await first;
+    expect(useMixerStore.getState().startupSynchronizing).toBe(false);
+    expect(useMixerStore.getState().startupSynchronized).toBe(false);
+  });
+});
+
 describe("toggleMonitor", () => {
   it("flips optimistically and calls the backend", async () => {
     const store = useMixerStore.getState();

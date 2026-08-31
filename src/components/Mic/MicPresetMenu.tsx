@@ -5,6 +5,7 @@ import { DEFAULT_EQ_BANDS, MIC_DSP_DEFAULTS } from "../../types";
 import { useMixerStore } from "../../store/mixer";
 import { Ms } from "../Icons";
 import { Popover } from "../Popover";
+import { useI18n } from "../../i18n";
 
 interface MicPreset {
   schema: number;
@@ -60,6 +61,7 @@ export function MicPresetMenu({
   onApply: (patch: Partial<MicConfig>) => void;
   compact?: boolean;
 }>) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [presets, setPresets] = useState<MicPreset[]>([]);
   const [saveName, setSaveName] = useState("");
@@ -120,10 +122,10 @@ export function MicPresetMenu({
         type="button"
         className={compact ? "strip-preset-button" : "select"}
         onClick={() => setOpen((value) => !value)}
-        title="Microphone processing preset"
+        title={t("microphone.presets.hint")}
       >
         <Ms name="graphic_eq" />
-        <span>{active?.name ?? "Custom"}</span>
+        <span>{active === BALANCED ? t("microphone.presets.balanced") : active?.name ?? t("microphone.presets.custom")}</span>
         <Ms name="expand_more" />
       </button>
       <Popover
@@ -136,7 +138,7 @@ export function MicPresetMenu({
         align={compact ? "center" : "end"}
         style={{ minWidth: 250 }}
       >
-        <div className="eqm-preset-head">Microphone presets</div>
+        <div className="eqm-preset-head">{t("microphone.presets.title")}</div>
         {all.map((preset, index) => (
           <div key={`${index === 0 ? "bundled" : "user"}:${preset.name}`} className="eqm-preset-row">
             <button
@@ -145,20 +147,20 @@ export function MicPresetMenu({
               onClick={() => apply(preset)}
             >
               <Ms name="graphic_eq" />
-              <span className="eqm-preset-name">{preset.name}</span>
+              <span className="eqm-preset-name">{index === 0 ? t("microphone.presets.balanced") : preset.name}</span>
             </button>
             {index > 0 && (
               confirmDelete === preset.name ? (
                 <span className="eqm-preset-confirm">
-                  <button type="button" className="eqm-remove danger" title="Delete this preset" onClick={() => void remove(preset.name)}>
+                  <button type="button" className="eqm-remove danger" title={t("microphone.presets.deleteHint")} onClick={() => void remove(preset.name)}>
                     <Ms name="check" />
                   </button>
-                  <button type="button" className="eqm-remove" title="Keep it" onClick={() => setConfirmDelete(null)}>
+                  <button type="button" className="eqm-remove" title={t("microphone.presets.keep")} onClick={() => setConfirmDelete(null)}>
                     <Ms name="close" />
                   </button>
                 </span>
               ) : (
-                <button type="button" className="eqm-remove" title="Delete preset" onClick={() => setConfirmDelete(preset.name)}>
+                <button type="button" className="eqm-remove" title={t("microphone.presets.delete")} onClick={() => setConfirmDelete(preset.name)}>
                   <Ms name="close" />
                 </button>
               )
@@ -166,11 +168,11 @@ export function MicPresetMenu({
           </div>
         ))}
         <div className="menu-sep" />
-        <div className="eqm-save-label">Save current microphone processing</div>
+        <div className="eqm-save-label">{t("microphone.presets.save")}</div>
         <div className="eqm-save-row">
           <input
             className="menu-input"
-            placeholder="Preset name…"
+            placeholder={t("microphone.presets.namePlaceholder")}
             value={saveName}
             maxLength={64}
             onChange={(event) => setSaveName(event.target.value)}

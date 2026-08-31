@@ -8,6 +8,7 @@ import { MicPresetMenu } from "../Mic/MicPresetMenu";
 import { AppIcon } from "../AppList/AppIcon";
 import { InputSelect } from "./InputSelect";
 import { ConfirmModal } from "../ConfirmModal";
+import { useI18n } from "../../i18n";
 
 interface MicStripProps {
   config: MicConfig;
@@ -27,6 +28,7 @@ export function MicStrip({
   onStripDragOver,
   onOpenSettings,
 }: Readonly<MicStripProps>) {
+  const { t } = useI18n();
   const setMicChannelConfig = useMixerStore((s) => s.setMicChannelConfig);
   const setMicConfig = (patch: Partial<MicConfig>) => setMicChannelConfig(micConfig.node_name, patch);
   const monitoring = useMixerStore((s) => s.monitors[micConfig.node_name] ?? false);
@@ -55,7 +57,7 @@ export function MicStrip({
         <span
           className="strip-grip"
           draggable
-          title="Drag to reorder"
+          title={t("mixer.dragReorder")}
           onDragStart={onGripDragStart}
           onDragEnd={onGripDragEnd}
         >
@@ -66,8 +68,8 @@ export function MicStrip({
         <button
           type="button"
           className="strip-x"
-          aria-label={`Delete microphone ${micConfig.output_label}`}
-          title="Delete microphone"
+          aria-label={t("microphone.delete.action")}
+          title={t("microphone.delete.action")}
           onClick={() => setConfirmingDelete(true)}
         >
           <Ms name="close" />
@@ -94,7 +96,7 @@ export function MicStrip({
           ) : (
             <div
               className="strip-name strip-name-editable"
-              title="Double-click to rename - other apps see this name"
+              title={t("mixer.microphone.renameHint")}
               onDoubleClick={() => {
                 if (!micConfig.enabled) return;
                 setDraft(micConfig.output_label);
@@ -105,7 +107,7 @@ export function MicStrip({
             </div>
           )}
         </div>
-        <div className="strip-meta">{micConfig.enabled ? "capture" : "disabled"}</div>
+        <div className="strip-meta">{t(micConfig.enabled ? "mixer.microphone.capture" : "mixer.microphone.disabled")}</div>
       </div>
 
       <div className="strip-preset-slot">
@@ -120,7 +122,7 @@ export function MicStrip({
         <Fader
           value={micConfig.gain_percent}
           max={MAX_MIC_GAIN}
-          ariaLabel={`${micConfig.output_label} gain`}
+          ariaLabel={t("microphone.gainLabel", { microphone: micConfig.output_label })}
           onChange={(v) => void setMicConfig({ gain_percent: v })}
         />
         <VuMeter
@@ -133,7 +135,7 @@ export function MicStrip({
       <div className="strip-readout">
         {micConfig.gain_percent}
         <span style={{ fontSize: 11 }}>%</span>{" "}
-        <span className="db">gain</span>
+        <span className="db">{t("microphone.gain")}</span>
       </div>
 
       <div className="strip-btns">
@@ -142,7 +144,7 @@ export function MicStrip({
           className={"sbtn" + (micConfig.muted ? " on-mute" : "")}
           onClick={() => void setMicConfig({ muted: !micConfig.muted })}
           aria-pressed={micConfig.muted}
-          title={micConfig.muted ? "Unmute mic" : "Mute mic"}
+          title={t(micConfig.muted ? "mixer.microphone.unmute" : "mixer.microphone.mute")}
         >
           <Ms name={micConfig.muted ? "mic_off" : "mic"} style={{ fontSize: 16 }} />
         </button>
@@ -151,7 +153,7 @@ export function MicStrip({
           className={"sbtn" + (monitoring ? " on-mon" : "")}
           onClick={() => void toggleMonitor(micConfig.node_name)}
           aria-pressed={monitoring}
-          title="Sidetone - hear your processed mic on the default output"
+          title={t("mixer.microphone.sidetone")}
         >
           <Ms name="headphones" style={{ fontSize: 16 }} />
         </button>
@@ -160,26 +162,26 @@ export function MicStrip({
       {!micConfig.enabled ? (
         <button type="button" className="strip-apps mic-disabled-settings" onClick={onOpenSettings}>
           <Ms name="settings_voice" />
-          <strong>Open mic settings</strong>
-          <small>Enable this microphone for the active profile</small>
+          <strong>{t("mixer.microphone.openSettings")}</strong>
+          <small>{t("mixer.microphone.enableHint")}</small>
         </button>
       ) : (
-        <div className="strip-apps strip-apps-passive" aria-label="Applications using the microphone">
-          <div className="strip-apps-label">Apps</div>
+        <div className="strip-apps strip-apps-passive" aria-label={t("mixer.microphone.clients")}>
+          <div className="strip-apps-label">{t("onboarding.flow.apps")}</div>
           {micClients.length === 0 ? (
-            <div className="strip-apps-empty">No apps are using this mic</div>
+            <div className="strip-apps-empty">{t("mixer.microphone.noClients")}</div>
           ) : (
           micClients.map((client) => (
             <div
               className={"strip-app-chip" + (client.active ? " active" : "")}
               key={`${client.mic_node}\0${client.match_prop}\0${client.match_value}`}
-              title={`${client.app_name} is recording from this processed mic`}
+              title={t("mixer.microphone.clientRecording", { application: client.app_name })}
             >
               <span className="strip-app-icon">
                 <AppIcon iconPath={client.icon_path} />
               </span>
               <span className="strip-app-name">{client.app_name}</span>
-              {client.active && <span className="strip-app-live" title="Recording" />}
+              {client.active && <span className="strip-app-live" title={t("mixer.microphone.recording")} />}
             </div>
           ))) }
         </div>
@@ -192,11 +194,11 @@ export function MicStrip({
       <ConfirmModal
         open={confirmingDelete}
         onClose={() => setConfirmingDelete(false)}
-        title={`Delete "${micConfig.output_label}"?`}
-        confirmLabel="Delete microphone"
+        title={t("microphone.delete.title", { microphone: micConfig.output_label })}
+        confirmLabel={t("microphone.delete.action")}
         onConfirm={() => void removeMicChannel(micConfig.node_name)}
       >
-        This removes its virtual input and profile-specific processing. Applications using it will need another microphone selected.
+        {t("microphone.delete.body")}
       </ConfirmModal>
       </div>
   );

@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Ms, SinkMark } from "../Icons";
+import { useI18n } from "../../i18n";
 
 /**
  * Frameless window chrome: brand, current screen and window controls.
@@ -7,6 +8,7 @@ import { Ms, SinkMark } from "../Icons";
  * Rust side intercepts to hide to tray.
  */
 export function TitleBar({ screen }: Readonly<{ screen: string }>) {
+  const { t } = useI18n();
   const win = getCurrentWindow();
 
   return (
@@ -16,7 +18,7 @@ export function TitleBar({ screen }: Readonly<{ screen: string }>) {
           <SinkMark />
         </div>
         <div data-tauri-drag-region className="hb-title">
-          Sonux
+          {t("app.name")}
         </div>
       </div>
       <div data-tauri-drag-region className="hb-sub">
@@ -24,13 +26,13 @@ export function TitleBar({ screen }: Readonly<{ screen: string }>) {
       </div>
       <div data-tauri-drag-region className="hb-spacer" />
       <div className="wctl">
-        <button type="button" className="wbtn" aria-label="Minimize" onClick={() => void win.minimize()}>
+        <button type="button" className="wbtn" aria-label={t("window.minimize")} onClick={() => void win.minimize()}>
           <Ms name="remove" />
         </button>
         <button
           type="button"
           className="wbtn"
-          aria-label="Maximize"
+          aria-label={t("window.maximize")}
           onClick={() => void win.toggleMaximize()}
         >
           <Ms name="crop_square" style={{ fontSize: 13 }} />
@@ -38,8 +40,8 @@ export function TitleBar({ screen }: Readonly<{ screen: string }>) {
         <button
           type="button"
           className="wbtn close"
-          aria-label="Close (hide to tray)"
-          title="Hides to tray - quit from the tray menu"
+          aria-label={t("window.closeToTray")}
+          title={t("window.closeToTrayHint")}
           onClick={() => void win.close()}
         >
           <Ms name="close" />

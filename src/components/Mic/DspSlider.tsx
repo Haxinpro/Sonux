@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { KeyboardEvent } from "react";
 import { handleSliderKey } from "../../lib/sliderKeyboard";
+import { useI18n } from "../../i18n";
 
 interface DspSliderProps {
   label: string;
@@ -33,6 +34,7 @@ export function DspSlider({
   disabled = false,
   onChange,
 }: Readonly<DspSliderProps>) {
+  const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
 
@@ -105,7 +107,7 @@ export function DspSlider({
             className="hs-track"
             ref={trackRef}
             {...sliderProps}
-            title={`Default: ${defaultValue}${unit} (double-click to reset)`}
+            title={t("common.defaultResetHint", { value: `${defaultValue}${unit}` })}
             onPointerDown={(e) => {
               if (disabled) return;
               dragging.current = true;
@@ -127,7 +129,7 @@ export function DspSlider({
             className="hs-track"
             ref={trackRef}
             {...sliderProps}
-            title={`Default: ${defaultValue}${unit} (double-click to reset)`}
+            title={t("common.defaultResetHint", { value: `${defaultValue}${unit}` })}
             onPointerDown={(e) => {
               if (disabled) return;
               dragging.current = true;

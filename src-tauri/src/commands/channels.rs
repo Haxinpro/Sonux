@@ -37,7 +37,10 @@ impl PersistedChannelState {
         attempt!("outputs", self.outputs.save());
         attempt!("equalizer settings", self.eq.save());
         attempt!("mix definitions", self.buses.save());
-        attempt!("WirePlumber rules", wireplumber::write(&self.assignments));
+        attempt!(
+            "WirePlumber integration",
+            wireplumber::write(&self.assignments)
+        );
         if errors.is_empty() {
             Ok(())
         } else {
@@ -809,6 +812,43 @@ pub fn remove_channel(
         }
     }
 
+    // Stop the session manager from selecting the channel for a stream born
+    // between evacuation and destruction. This is part of the same
+    // transaction as the persisted assignment removal.
+    let seen = state.lock_mixer()?.seen.clone();
+    if let Err(error) = state.publish_app_routes(Some(&next.assignments), Some(&seen)) {
+        let restore_streams = restore_stream_routes(&state, &evacuated, &sink_name);
+        let mixer = state.lock_mixer()?;
+        return Err(add_channel_failure(
+            format!("publish routes before removing {sink_name}: {error}"),
+            &[
+                ("restoring evacuated streams", restore_streams),
+                (
+                    "restoring previous live mix memberships",
+                    restore_bus_memberships(&state, &previous.buses, &old_names, &applied_buses),
+                ),
+                (
+                    "restoring the previous active profile",
+                    crate::commands::profiles::save_active_with_channel_state(
+                        &mixer,
+                        &mixer.channels,
+                        &previous.assignments,
+                        &previous.outputs,
+                        &previous.eq,
+                        &previous.buses,
+                    ),
+                ),
+                ("restoring the previous channel files", previous.restore()),
+                (
+                    "restoring the previous live pre-link routes",
+                    state
+                        .publish_app_routes(Some(&previous.assignments), Some(&seen))
+                        .map_err(crate::error::SinkError::Config),
+                ),
+            ],
+        ));
+    }
+
     if let Err(error) = state.backend.destroy_virtual_sink(&sink_name) {
         let restore_streams = restore_stream_routes(&state, &evacuated, &sink_name);
         let mixer = state.lock_mixer()?;
@@ -832,6 +872,12 @@ pub fn remove_channel(
                     ),
                 ),
                 ("restoring the previous channel files", previous.restore()),
+                (
+                    "restoring the previous live pre-link routes",
+                    state
+                        .publish_app_routes(Some(&previous.assignments), Some(&seen))
+                        .map_err(crate::error::SinkError::Config),
+                ),
             ],
         ));
     }

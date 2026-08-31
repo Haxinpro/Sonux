@@ -3,15 +3,20 @@ import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { invoke } from "@tauri-apps/api/core";
 import { useMixerStore } from "../store/mixer";
 import { useShortcutSettings, type ShortcutAction } from "../store/shortcuts";
+import { translate } from "../i18nCore";
 
 let restartPending = false;
+
+function currentTranslation(key: Parameters<typeof translate>[1], variables: Parameters<typeof translate>[2] = {}) {
+  return translate(document.documentElement.lang || "en", key, variables);
+}
 
 export function restartApplication() {
   if (restartPending) return;
   restartPending = true;
   void invoke("restart_app").catch((cause) => {
     restartPending = false;
-    useMixerStore.setState({ error: `Could not restart Sonux: ${String(cause)}` });
+    useMixerStore.setState({ error: currentTranslation("errors.restartFailed", { cause: String(cause) }) });
   });
 }
 
@@ -42,7 +47,7 @@ export function useGlobalShortcuts() {
       .filter(([, shortcut]) => shortcut.length > 0);
     const normalized = entries.map(([, shortcut]) => shortcut.toLowerCase());
     if (new Set(normalized).size !== normalized.length) {
-      useMixerStore.setState({ error: "Each global shortcut must use a different key combination." });
+      useMixerStore.setState({ error: currentTranslation("errors.shortcutsDuplicate") });
       return;
     }
 
@@ -67,7 +72,7 @@ export function useGlobalShortcuts() {
       }
       if (!disposed && failed.length > 0) {
         useMixerStore.setState({
-          error: `Could not register ${failed.join(", ")} globally. Other shortcuts remain active.`,
+          error: currentTranslation("errors.shortcutsRegistration", { shortcuts: failed.join(", ") }),
         });
       }
     };

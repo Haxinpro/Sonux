@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Modal } from "./Modal";
+import { useI18n } from "../i18n";
 
 interface ConfirmModalProps {
   open: boolean;
@@ -24,6 +25,7 @@ export function ConfirmModal({
   onConfirm,
   children,
 }: Readonly<ConfirmModalProps>) {
+  const { t } = useI18n();
   return (
     <Modal
       open={open}
@@ -53,7 +55,7 @@ export function ConfirmModal({
             onCancel?.();
           }}
         >
-          Cancel
+          {t("common.action.cancel")}
         </button>
       </div>
     </Modal>

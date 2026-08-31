@@ -1,12 +1,13 @@
 {
   "name": "sonux",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "type": "module",
   "license": "GPL-3.0-only",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "i18n:example": "node --experimental-strip-types scripts/generate-language-example.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run"

@@ -8,6 +8,7 @@ import { ProcessingInfo } from "../ProcessingInfo";
 import { DspSlider } from "../Mic/DspSlider";
 import { EqBandRow } from "./EqBandRow";
 import { bandColor, EqCurve } from "./EqCurve";
+import { useI18n, type TranslationKey } from "../../i18n";
 
 interface EqEditorProps {
   channel: VirtualSink;
@@ -15,6 +16,7 @@ interface EqEditorProps {
 
 /** Embedded per-channel parametric EQ editor: response curve, band list, preamp. */
 export function EqEditor({ channel }: Readonly<EqEditorProps>) {
+  const { t } = useI18n();
   const config = useMixerStore(
     (s) => s.eqConfigs[channel.name] ?? null,
   ) ?? defaultEqConfig();
@@ -69,18 +71,17 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
     setSelected(0);
   };
 
-  const tones: { field: "tone_bass_db" | "tone_voice_db" | "tone_treble_db"; label: string; detail: string }[] = [
-    { field: "tone_bass_db", label: "Bass", detail: "Broad low-frequency tone" },
-    { field: "tone_voice_db", label: "Voice", detail: "Broad vocal-presence tone" },
-    { field: "tone_treble_db", label: "Treble", detail: "Broad high-frequency tone" },
+  const tones: { field: "tone_bass_db" | "tone_voice_db" | "tone_treble_db"; label: TranslationKey; detail: TranslationKey }[] = [
+    { field: "tone_bass_db", label: "equalizer.bass", detail: "equalizer.bassDetail" },
+    { field: "tone_voice_db", label: "equalizer.voice", detail: "equalizer.voiceDetail" },
+    { field: "tone_treble_db", label: "equalizer.treble", detail: "equalizer.trebleDetail" },
   ];
 
   return (
     <div className="eqm-editor">
       {backendNative === false && (
         <p className="modal-text">
-          Parametric EQ requires the native PipeWire engine, which isn't
-          running on this system.
+          {t("equalizer.nativeRequired")}
         </p>
       )}
       <div className="eqm-head">
@@ -89,21 +90,21 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
             on={config.enabled}
             onClick={() => apply({ ...config, enabled: !config.enabled })}
           />
-          <div className="rtitle">Equalizer</div>
+          <div className="rtitle">{t("equalizer.title")}</div>
         </div>
         <div className="eqm-head-actions">
           <button
             type="button"
             className="select eqm-iconbtn"
             onClick={reset}
-            title="Reset the parametric EQ and tone controls"
-            aria-label="Reset EQ"
+            title={t("equalizer.resetHint")}
+            aria-label={t("equalizer.reset")}
           >
             <Ms name="restart_alt" style={{ fontSize: 16 }} />
           </button>
           <ProcessingInfo
-            label="Equalizer controls"
-            text={'Drag a point to move it. Scroll over a point to change its width.\n\nDouble-click empty graph space to add a band. Right-click a point for options.'}
+            label={t("equalizer.infoLabel")}
+            text={t("equalizer.info")}
           />
         </div>
       </div>
@@ -117,15 +118,15 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
         onRemoveBand={removeBand}
       />
 
-      <div className="eqm-tone-controls" aria-label="Quick tone controls">
+      <div className="eqm-tone-controls" aria-label={t("equalizer.quickTones")}>
         {tones.map(({ field, label, detail }) => {
           return (
             <div
               key={field}
-              title={`${detail}; this separate tone stage does not move the parametric EQ points`}
+              title={t("equalizer.toneHint", { detail: t(detail) })}
             >
               <DspSlider
-                label={label}
+                label={t(label)}
                 min={-TONE_GAIN_RANGE_DB}
                 max={TONE_GAIN_RANGE_DB}
                 step={0.5}
@@ -140,7 +141,7 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
       </div>
 
       <DspSlider
-        label="Preamp"
+        label={t("equalizer.preamp")}
         min={-24}
         max={24}
         step={0.5}
@@ -159,10 +160,10 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
         >
           <span>
             <Ms name="tune" style={{ fontSize: 16 }} />
-            Advanced band controls
+            {t("equalizer.advanced")}
           </span>
           <span className="eqm-advanced-count">
-            {config.bands.length} bands
+            {t(config.bands.length === 1 ? "equalizer.bandOne" : "equalizer.bandMany", { count: config.bands.length })}
             <Ms name={advancedOpen ? "expand_less" : "expand_more"} style={{ fontSize: 17 }} />
           </span>
         </button>
@@ -188,7 +189,7 @@ export function EqEditor({ channel }: Readonly<EqEditorProps>) {
             {config.bands.length < MAX_EQ_BANDS && (
               <button type="button" className="eqm-add" onClick={addBand}>
                 <Ms name="add" style={{ fontSize: 15 }} />
-                Add band
+                {t("equalizer.addBand")}
               </button>
             )}
           </div>

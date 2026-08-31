@@ -180,4 +180,19 @@ describe("Modal focus management", () => {
     expect(dialog.contains(document.activeElement)).toBe(true);
     expect((document.activeElement as HTMLElement).getAttribute("title")).toBe("Close");
   });
+
+  it("can require an explicit in-dialog action", () => {
+    const close = vi.fn();
+    act(() => root.render(
+      <Modal open dismissible={false} title="Welcome" onClose={close}>
+        <button type="button">Skip</button>
+      </Modal>,
+    ));
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.querySelector('[title="Close"]')).toBeNull();
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    act(() => dialog.parentElement!.click());
+    expect(close).not.toHaveBeenCalled();
+    expect(document.activeElement?.textContent).toBe("Skip");
+  });
 });

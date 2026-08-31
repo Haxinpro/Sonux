@@ -47,6 +47,7 @@ export function MenuItem({
 
 interface MenuCheckItemProps {
   checked: boolean;
+  mixed?: boolean;
   onClick: () => void;
   title?: string;
   className?: string;
@@ -56,6 +57,7 @@ interface MenuCheckItemProps {
 /** A menu row that toggles rather than picks: membership lists and flags. */
 export function MenuCheckItem({
   checked,
+  mixed = false,
   onClick,
   title,
   className,
@@ -65,14 +67,14 @@ export function MenuCheckItem({
     <button
       type="button"
       role="menuitemcheckbox"
-      aria-checked={checked}
+      aria-checked={mixed ? "mixed" : checked}
       className={cx("menu-item", className)}
       title={title}
       onClick={onClick}
     >
       <Ms
-        name={checked ? "check_box" : "check_box_outline_blank"}
-        className={cx(checked && "menu-check-on")}
+        name={mixed ? "indeterminate_check_box" : checked ? "check_box" : "check_box_outline_blank"}
+        className={cx((checked || mixed) && "menu-check-on")}
       />
       {children}
     </button>

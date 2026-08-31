@@ -19,6 +19,26 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Publish the exact persisted identity map consumed by Sonux's
+    /// WirePlumber pre-link hook. The native backend retains the payload and
+    /// republishes it if WirePlumber's default metadata object is recreated.
+    pub fn publish_app_routes(
+        &self,
+        assignments: Option<&crate::persistence::assignments::Assignments>,
+        seen: Option<&crate::persistence::seen::SeenApps>,
+    ) -> Result<(), String> {
+        let value = assignments
+            .zip(seen)
+            .map(|(assignments, seen)| {
+                crate::persistence::wireplumber::routes_metadata_value(assignments, seen)
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        self.backend
+            .set_app_route_metadata(value.as_deref())
+            .map_err(|error| error.to_string())
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(backend: Arc<dyn AudioBackend>) -> Self {
         Self {
@@ -228,6 +248,9 @@ impl AppState {
             })
             .unwrap_or_default();
         let mut errors = Vec::new();
+        if let Err(error) = self.publish_app_routes(None, None) {
+            errors.push(format!("clear pre-link app routes: {error}"));
+        }
         for name in names {
             if let Err(e) = self.backend.destroy_virtual_sink(&name) {
                 errors.push(format!("{name}: {e}"));

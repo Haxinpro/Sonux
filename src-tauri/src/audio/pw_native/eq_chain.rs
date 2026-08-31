@@ -36,6 +36,9 @@ const TEST_IDLE: u8 = 0;
 const TEST_RECORDING: u8 = 1;
 const TEST_LOOPING: u8 = 2;
 const TEST_ONCE: u8 = 3;
+/// Five milliseconds is long enough to remove a discontinuous first sample
+/// while remaining imperceptible as a playback delay.
+const RESUME_FADE_FRAMES: usize = TEST_RATE / 200;
 /// Maximum interleaved samples decoded at once by the RT capture callback.
 /// Divisible by both supported channel counts (stereo and 7.1).
 const CAPTURE_CHUNK_SAMPLES: usize = 8192;
@@ -222,10 +225,104 @@ struct EqCaptureCtx {
     spatial: Option<SpatialEngine>,
     spatial_params: super::spatial::SpatialRenderParams,
     test: Arc<ChannelTestBuffer>,
+    resume_generation: Arc<AtomicUsize>,
+    capture_generation_ack: Arc<AtomicUsize>,
+    capture_boundary: Arc<AtomicUsize>,
+    seen_resume_generation: usize,
 }
 
 struct EqPlaybackCtx {
     ring: Arc<Ring>,
+    resume_fade: ResumeFade,
+    resume_generation: Arc<AtomicUsize>,
+    capture_generation_ack: Arc<AtomicUsize>,
+    capture_boundary: Arc<AtomicUsize>,
+    seen_resume_generation: usize,
+}
+
+struct ResumeFade {
+    frame: usize,
+    armed: bool,
+}
+
+impl ResumeFade {
+    fn new() -> Self {
+        Self {
+            frame: 0,
+            armed: true,
+        }
+    }
+
+    fn arm(&mut self) {
+        self.frame = 0;
+        self.armed = true;
+    }
+
+    fn apply(&mut self, samples: &mut [f32]) {
+        if !self.armed {
+            return;
+        }
+        let (frames, remainder) = samples.as_chunks_mut::<2>();
+        for stereo in frames {
+            let gain = ((self.frame + 1) as f32 / RESUME_FADE_FRAMES as f32).min(1.0);
+            stereo[0] *= gain;
+            stereo[1] *= gain;
+            self.frame += 1;
+            if self.frame == RESUME_FADE_FRAMES {
+                self.armed = false;
+                break;
+            }
+        }
+        // Ring writes and playback requests are stereo-aligned. Keep a
+        // defensive bound for a malformed partial frame without advancing the
+        // ramp differently for left and right.
+        if self.armed && !remainder.is_empty() {
+            let gain = ((self.frame + 1) as f32 / RESUME_FADE_FRAMES as f32).min(1.0);
+            remainder[0] *= gain;
+        }
+    }
+}
+
+/// Establish the consumer half of a pause boundary. Playback stays silent
+/// until capture has reset its DSP and published the exact producer cursor
+/// separating stale samples from resumed audio. Discarding only through that
+/// cursor preserves fresh samples even when capture publishes them before the
+/// playback callback observes the acknowledgement.
+fn synchronize_resume_boundary(
+    seen_generation: &mut usize,
+    target_generation: usize,
+    acknowledged_generation: usize,
+    capture_boundary: usize,
+    ring: &Ring,
+    fade: &mut ResumeFade,
+) -> bool {
+    if *seen_generation == target_generation {
+        return true;
+    }
+    fade.arm();
+    if acknowledged_generation != target_generation {
+        return false;
+    }
+    ring.discard_through(capture_boundary);
+    *seen_generation = target_generation;
+    true
+}
+
+/// Reject a chunk if capture crossed a lifecycle boundary while playback was
+/// reading it. The consumer cannot roll its cursor back safely after a pop,
+/// but muting this rare concurrent chunk prevents new-generation audio from
+/// escaping under the old generation without its resume fade.
+fn validate_popped_generation(
+    samples: &mut [f32],
+    real: usize,
+    expected_generation: usize,
+    observed_generation: usize,
+) -> usize {
+    if observed_generation == expected_generation {
+        return real;
+    }
+    samples.fill(0.0);
+    0
 }
 
 struct TestDriverCtx {
@@ -234,6 +331,7 @@ struct TestDriverCtx {
 
 pub struct EqChainHandle {
     _capture: pw::stream::StreamRc,
+    _capture_state_listener: pw::stream::StreamListener<Arc<AtomicUsize>>,
     _capture_listener: pw::stream::StreamListener<EqCaptureCtx>,
     playback: pw::stream::StreamRc,
     _playback_listener: pw::stream::StreamListener<EqPlaybackCtx>,
@@ -344,6 +442,83 @@ mod tests {
         }
         assert_eq!(samples, CAPTURE_CHUNK_SAMPLES * 3);
     }
+
+    #[test]
+    fn resume_fade_is_stereo_aligned_and_reaches_unity() {
+        let mut fade = ResumeFade::new();
+        let mut samples = vec![1.0f32; RESUME_FADE_FRAMES * 2 + 4];
+        fade.apply(&mut samples);
+
+        for frame in samples[..RESUME_FADE_FRAMES * 2].as_chunks::<2>().0 {
+            assert_eq!(frame[0], frame[1]);
+        }
+        assert!(samples[0] > 0.0 && samples[0] < 0.01);
+        assert_eq!(samples[RESUME_FADE_FRAMES * 2 - 2], 1.0);
+        assert_eq!(&samples[RESUME_FADE_FRAMES * 2..], &[1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn underrun_rearms_resume_fade() {
+        let mut fade = ResumeFade::new();
+        let mut first = vec![1.0f32; RESUME_FADE_FRAMES * 2];
+        fade.apply(&mut first);
+        assert_eq!(*first.last().unwrap(), 1.0);
+
+        fade.arm();
+        let mut resumed = [1.0f32; 2];
+        fade.apply(&mut resumed);
+        assert!(resumed[0] > 0.0 && resumed[0] < 0.01);
+        assert_eq!(resumed[0], resumed[1]);
+    }
+
+    #[test]
+    fn resume_boundary_discards_stale_ring_audio_before_fade() {
+        let ring = Ring::new(8);
+        let mut seen_generation = 0;
+        let mut fade = ResumeFade::new();
+
+        assert_eq!(ring.push(&[-1.0, -1.0]), 2);
+        assert!(!synchronize_resume_boundary(
+            &mut seen_generation,
+            1,
+            0,
+            0,
+            &ring,
+            &mut fade,
+        ));
+        // Emulate the old capture callback publishing after playback's first
+        // discard but before the next serialized capture callback can ack.
+        assert_eq!(ring.push(&[-0.5, -0.5]), 2);
+        let boundary = ring.write_position();
+        // Fresh capture may be published before playback observes the ack.
+        assert_eq!(ring.push(&[1.0, 1.0, 0.5, 0.5]), 4);
+        assert!(synchronize_resume_boundary(
+            &mut seen_generation,
+            1,
+            1,
+            boundary,
+            &ring,
+            &mut fade,
+        ));
+
+        let mut resumed = [0.0f32; 4];
+        let real = ring.pop(&mut resumed);
+        assert_eq!(real, 4);
+        fade.apply(&mut resumed[..real]);
+
+        assert!(resumed.iter().all(|sample| *sample >= 0.0));
+        assert_eq!(resumed[0], resumed[1]);
+        assert_eq!(resumed[2], resumed[3]);
+        assert!(resumed[0] > 0.0 && resumed[0] < 0.01);
+    }
+
+    #[test]
+    fn playback_mutes_a_chunk_when_generation_changes_during_pop() {
+        let mut samples = [0.5, -0.5, 0.25, -0.25];
+        let real = validate_popped_generation(&mut samples, 4, 1, 2);
+        assert_eq!(real, 0);
+        assert_eq!(samples, [0.0; 4]);
+    }
 }
 
 /// Interleaved F32 format pod for stream negotiation. Game/Media use the
@@ -397,6 +572,13 @@ impl EqChainHandle {
         // Interleaved stereo: 8192 samples = the same ~85 ms of headroom at
         // 48 kHz as the mic's 4096 mono; real added latency is one quantum.
         let ring = Arc::new(Ring::new(16384));
+        // Generation 1 makes both RT sides establish a clean boundary on
+        // their first callback. The main-loop listener only increments this
+        // atomic; it never touches capture-owned DSP or consumer-owned ring
+        // state.
+        let resume_generation = Arc::new(AtomicUsize::new(1));
+        let capture_generation_ack = Arc::new(AtomicUsize::new(0));
+        let capture_boundary = Arc::new(AtomicUsize::new(0));
         let input_channels = if surround { SURROUND_CHANNELS } else { 2 };
         let test = Arc::new(ChannelTestBuffer::new(input_channels));
         let spatial =
@@ -426,6 +608,18 @@ impl EqChainHandle {
         )
         .map_err(|e| err("capture stream", e))?;
 
+        let capture_state_listener = capture
+            .add_local_listener_with_user_data(resume_generation.clone())
+            .state_changed(|_, generation, old, new| {
+                if old == pw::stream::StreamState::Streaming
+                    && new != pw::stream::StreamState::Streaming
+                {
+                    generation.fetch_add(1, Ordering::AcqRel);
+                }
+            })
+            .register()
+            .map_err(|e| err("capture state listener", e))?;
+
         let capture_listener = capture
             .add_local_listener_with_user_data(EqCaptureCtx {
                 engine: EqEngine::new(48000.0),
@@ -441,6 +635,10 @@ impl EqChainHandle {
                     config.playback_mode == crate::audio::types::PlaybackMode::Headphones,
                 ),
                 test: test.clone(),
+                resume_generation: resume_generation.clone(),
+                capture_generation_ack: capture_generation_ack.clone(),
+                capture_boundary: capture_boundary.clone(),
+                seen_resume_generation: 0,
             })
             .param_changed(|_, ctx, id, param| {
                 // Coefficients are rate-relative: redesign on renegotiation.
@@ -455,6 +653,22 @@ impl EqChainHandle {
                 }
             })
             .process(|stream, ctx| {
+                let generation = ctx.resume_generation.load(Ordering::Acquire);
+                if generation != ctx.seen_resume_generation {
+                    ctx.engine.reset_runtime_state();
+                    if let Some(spatial) = &mut ctx.spatial {
+                        spatial.reset_runtime_state();
+                    }
+                    ctx.seen_resume_generation = generation;
+                    // Capture callbacks are serialized, so every stale write
+                    // precedes this cursor. Publish it before the generation
+                    // acknowledgement; fresh samples produced later in this
+                    // callback must remain on the consumer side of it.
+                    ctx.capture_boundary
+                        .store(ctx.ring.write_position(), Ordering::Relaxed);
+                    ctx.capture_generation_ack
+                        .store(generation, Ordering::Release);
+                }
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
                 };
@@ -527,7 +741,14 @@ impl EqChainHandle {
         .map_err(|e| err("playback stream", e))?;
 
         let playback_listener = playback
-            .add_local_listener_with_user_data(EqPlaybackCtx { ring })
+            .add_local_listener_with_user_data(EqPlaybackCtx {
+                ring,
+                resume_fade: ResumeFade::new(),
+                resume_generation,
+                capture_generation_ack,
+                capture_boundary,
+                seen_resume_generation: 0,
+            })
             .process(|stream, ctx| {
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
@@ -549,13 +770,47 @@ impl EqChainHandle {
                 if frames == 0 {
                     return;
                 }
+                let generation = ctx.resume_generation.load(Ordering::Acquire);
+                let acknowledged = ctx.capture_generation_ack.load(Ordering::Acquire);
+                // The acquire of the matching acknowledgement makes the
+                // preceding boundary publication visible.
+                let boundary = ctx.capture_boundary.load(Ordering::Relaxed);
+                let resume_ready = synchronize_resume_boundary(
+                    &mut ctx.seen_resume_generation,
+                    generation,
+                    acknowledged,
+                    boundary,
+                    &ctx.ring,
+                    &mut ctx.resume_fade,
+                );
                 if let Some(bytes) = data.data() {
                     let mut chunk_samples = [0.0f32; 1024];
                     let total_samples = frames * 2;
                     let mut written = 0;
                     while written < total_samples {
                         let take = (total_samples - written).min(chunk_samples.len());
-                        ctx.ring.pop(&mut chunk_samples[..take]);
+                        let real = if resume_ready
+                            && ctx.resume_generation.load(Ordering::Acquire) == generation
+                        {
+                            let popped = ctx.ring.pop(&mut chunk_samples[..take]);
+                            validate_popped_generation(
+                                &mut chunk_samples[..take],
+                                popped,
+                                generation,
+                                ctx.resume_generation.load(Ordering::Acquire),
+                            )
+                        } else {
+                            chunk_samples[..take].fill(0.0);
+                            0
+                        };
+                        if real == 0 {
+                            ctx.resume_fade.arm();
+                        } else {
+                            ctx.resume_fade.apply(&mut chunk_samples[..real]);
+                            if real < take {
+                                ctx.resume_fade.arm();
+                            }
+                        }
                         for (i, s) in chunk_samples[..take].iter().enumerate() {
                             let off = (written + i) * 4;
                             bytes[off..off + 4].copy_from_slice(&s.to_ne_bytes());
@@ -648,6 +903,7 @@ impl EqChainHandle {
 
         Ok(Self {
             _capture: capture,
+            _capture_state_listener: capture_state_listener,
             _capture_listener: capture_listener,
             playback,
             _playback_listener: playback_listener,

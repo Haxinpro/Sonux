@@ -12,6 +12,8 @@ export interface AppStream {
   icon_name: string | null;
   /** Resolved absolute icon file path (desktop-entry based). */
   icon_path: string | null;
+  /** Canonical desktop-file id used to group helper processes. */
+  desktop_id: string | null;
   /** Producing process id (used backend-side for icon resolution). */
   pid: number | null;
   /** Name of the virtual sink the stream is routed to, if any. */
@@ -183,11 +185,26 @@ export interface SeenApp {
   display_name: string;
   icon_name: string | null;
   icon_path: string | null;
+  /** Canonical desktop-file id; raw match fields still drive routing. */
+  desktop_id: string | null;
   /** Unix seconds of the last sighting. */
   last_seen: number;
   ignored: boolean;
   assigned_sink: string | null;
   alias: string | null;
+}
+
+export interface AppIdentity {
+  match_prop: string;
+  match_value: string;
+}
+
+/** A UI-level application backed by one or more exact routing identities. */
+export interface SeenAppGroup extends SeenApp {
+  group_key: string;
+  identities: AppIdentity[];
+  assignment_mixed: boolean;
+  assigned_sinks: string[];
 }
 
 /** A user-defined mix (record bus). The label is what recorders display. */

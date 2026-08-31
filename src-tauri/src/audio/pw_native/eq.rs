@@ -468,15 +468,23 @@ impl EqEngine {
         if sample_rate > 0.0 && sample_rate != self.sample_rate {
             self.sample_rate = sample_rate;
             self.seen_generation = u64::MAX;
-            self.state = [[BiquadState::default(); 2]; MAX_EQ_BANDS];
-            self.tone_state = [[BiquadState::default(); 2]; 3];
-            self.gate_env = 0.0;
-            self.gate_gain = 0.0;
-            self.gate_hold = 0;
-            self.comp_env = 0.0;
-            self.limiter_gain = 1.0;
-            self.crossfeed_lp = [0.0; 2];
+            self.reset_runtime_state();
         }
+    }
+
+    /// Clear signal-dependent memory after the PipeWire capture stream has
+    /// paused. Without this boundary, the first resumed frame is processed as
+    /// if it immediately followed the last pre-idle frame, which can turn
+    /// stale filter or crossfeed state into an audible transient.
+    pub fn reset_runtime_state(&mut self) {
+        self.state = [[BiquadState::default(); 2]; MAX_EQ_BANDS];
+        self.tone_state = [[BiquadState::default(); 2]; 3];
+        self.gate_env = 0.0;
+        self.gate_gain = 0.0;
+        self.gate_hold = 0;
+        self.comp_env = 0.0;
+        self.limiter_gain = 1.0;
+        self.crossfeed_lp = [0.0; 2];
     }
 
     fn refresh(&mut self, params: &EqParams) {
@@ -712,6 +720,26 @@ mod tests {
         for x in [0.0f32, 1.0, -0.5, 0.25] {
             assert_eq!(state.process(x, &c), x);
         }
+    }
+
+    #[test]
+    fn runtime_reset_removes_stale_filter_tail() {
+        let params = EqParams::from_config(&config(
+            vec![band(EqBandKind::LowPass, 1000.0, 0.0, 0.71)],
+            0.0,
+        ));
+        let mut engine = EqEngine::new(SR);
+        let mut impulse = [1.0f32, 1.0];
+        engine.process_interleaved(&mut impulse, &params);
+
+        let mut stale_tail = [0.0f32; 16];
+        engine.process_interleaved(&mut stale_tail, &params);
+        assert!(stale_tail.iter().any(|sample| sample.abs() > 1e-6));
+
+        engine.reset_runtime_state();
+        let mut resumed_silence = [0.0f32; 16];
+        engine.process_interleaved(&mut resumed_silence, &params);
+        assert_eq!(resumed_silence, [0.0; 16]);
     }
 
     #[test]

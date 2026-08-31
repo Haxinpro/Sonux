@@ -348,6 +348,23 @@ fn validate_frontend_state(state: &BTreeMap<String, String>) -> Result<(), SinkE
                     return Err(SinkError::Config("backup contains an invalid theme".into()));
                 }
             }
+            "sonux-language" => {
+                let valid_locale = value == "system" || {
+                    let mut parts = value.split('-');
+                    parts.next().is_some_and(|part| {
+                        (2..=3).contains(&part.len())
+                            && part.bytes().all(|byte| byte.is_ascii_alphabetic())
+                    }) && parts.all(|part| {
+                        (2..=8).contains(&part.len())
+                            && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    })
+                };
+                if !valid_locale || value.len() > 64 {
+                    return Err(SinkError::Config(
+                        "backup contains an invalid language preference".into(),
+                    ));
+                }
+            }
             "sonux-global-shortcuts" => {
                 let shortcuts: ShortcutBackupState = parse_json(key, value)?;
                 let _ = shortcuts.enabled;
@@ -768,6 +785,8 @@ mod tests {
 
         files = valid_files();
         let frontend = BTreeMap::from([("sonux-theme".into(), "transparent".into())]);
+        assert!(validate_managed_payload(&files, &frontend).is_err());
+        let frontend = BTreeMap::from([("sonux-language".into(), "bad_locale".into())]);
         assert!(validate_managed_payload(&files, &frontend).is_err());
     }
 

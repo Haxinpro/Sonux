@@ -13,8 +13,10 @@ import { AudioTestControls } from "../AudioTestControls";
 import { MicEqEditor } from "./MicEqEditor";
 import { Modal } from "../Modal";
 import { ConfirmModal } from "../ConfirmModal";
+import { useI18n } from "../../i18n";
 
 export function MicScreen() {
+  const { t } = useI18n();
   const micConfigs = useMixerStore((s) => s.micConfigs);
   const selectedMicNode = useMixerStore((s) => s.selectedMicNode);
   const multipleMics = useMixerStore((s) => s.multipleMics);
@@ -46,7 +48,7 @@ export function MicScreen() {
     return (
       <div className="content">
         <div className="empty-hint" style={{ margin: "auto" }}>
-          Loading mic configuration…
+          {t("microphone.loading")}
         </div>
       </div>
     );
@@ -55,7 +57,7 @@ export function MicScreen() {
   const currentDevice = inputDevices.find((d) => d.name === micConfig.input_device);
   const deviceLabel =
     micConfig.input_device === null
-      ? "System default"
+      ? t("common.systemDefault")
       : (currentDevice?.description ?? micConfig.input_device);
 
   return (
@@ -64,7 +66,7 @@ export function MicScreen() {
         <div className="channel-heading-icon">
           <Ms name="mic" />
         </div>
-        <h1>Microphone</h1>
+        <h1>{t("microphone.title")}</h1>
         {multipleMics && (
           <div className="mic-channel-picker">
             <div style={{ position: "relative" }}>
@@ -83,16 +85,16 @@ export function MicScreen() {
                       setChannelOpen(false);
                     }}
                   >
-                    {mic.output_label}{index === 0 ? " · Primary" : ""}
+                    {mic.output_label}{index === 0 ? ` · ${t("microphone.primary")}` : ""}
                   </MenuItem>
                 ))}
               </Popover>
             </div>
-            <button type="button" className="select mic-channel-action" onClick={() => setAddingMic(true)} title="Add microphone channel">
+            <button type="button" className="select mic-channel-action" onClick={() => setAddingMic(true)} title={t("microphone.addChannel")}>
               <Ms name="add" />
             </button>
             {micNode !== MIC_LEVEL_KEY && (
-              <button type="button" className="select mic-channel-action" onClick={() => setDeletingMic(true)} title="Delete microphone channel">
+              <button type="button" className="select mic-channel-action" onClick={() => setDeletingMic(true)} title={t("microphone.deleteChannel")}>
                 <Ms name="delete" />
               </button>
             )}
@@ -101,9 +103,9 @@ export function MicScreen() {
         <div className="screen-head-actions">
           <div
             className="mic-head-enable"
-            title={`Enable the processed microphone for profile “${activeProfile ?? "Current profile"}”`}
+            title={t("microphone.enableForProfile", { profile: activeProfile ?? t("microphone.currentProfile") })}
           >
-            <span>Processed mic</span>
+            <span>{t("microphone.processed")}</span>
             <Toggle
               on={micConfig.enabled}
               onClick={() => {
@@ -121,18 +123,18 @@ export function MicScreen() {
               onClick={() => void updateMic({ muted: !micConfig.muted })}
             >
               <Ms name={micConfig.muted ? "mic_off" : "mic"} />
-              {micConfig.muted ? "Muted" : "Mute"}
+              {t(micConfig.muted ? "channel.muted" : "channel.mute")}
             </button>
             <button
               type="button"
               className={"select channel-head-control" + (listening ? " on-mon" : "")}
               disabled={!micConfig.enabled}
               aria-pressed={listening}
-              title="Listen to yourself - hear the processed mic to tune the chain (wear headphones)"
+              title={t("microphone.listenHint")}
               onClick={() => void toggleMonitor(micNode)}
             >
               <Ms name="headphones" />
-              {listening ? "Listening" : "Listen"}
+              {t(listening ? "channel.listening" : "channel.listen")}
             </button>
             <AudioTestControls kind="mic" nodeName={micNode} />
           </div>
@@ -140,11 +142,11 @@ export function MicScreen() {
       </div>
       <div className="screen-scroll channel-scroll">
         <div className={micConfig.enabled ? undefined : "mic-disabled"}>
-            <div className="section-label">Input</div>
+            <div className="section-label">{t("microphone.input.section")}</div>
             <div className="card channel-controls-card mic-controls-card">
               <div className="channel-control-block channel-preset-control">
                 <div>
-                  <div className="rtitle">Preset</div>
+                  <div className="rtitle">{t("microphone.preset")}</div>
                 </div>
                 <MicPresetMenu
                   config={micConfig}
@@ -153,20 +155,20 @@ export function MicScreen() {
               </div>
               <div className="channel-control-block mic-summary-gain-control">
                 <div>
-                  <div className="rtitle">Gain</div>
+                  <div className="rtitle">{t("microphone.gain")}</div>
                 </div>
                 <div className="mic-summary-gain">
                   <HSlider
                     value={micConfig.gain_percent}
                     max={MAX_MIC_GAIN}
-                    ariaLabel={`${micConfig.output_label} gain`}
+                    ariaLabel={t("microphone.gainLabel", { microphone: micConfig.output_label })}
                     onChange={(v) => void updateMic({ gain_percent: v })}
                   />
                 </div>
               </div>
               <div className="channel-control-block mic-input-control">
                 <div>
-                  <div className="rtitle">Device</div>
+                  <div className="rtitle">{t("microphone.device")}</div>
                 </div>
                 <div className="mic-input-picker">
                   <button type="button" className="select mic-device-select" onClick={() => setDeviceOpen((o) => !o)}>
@@ -188,7 +190,7 @@ export function MicScreen() {
                         setDeviceOpen(false);
                       }}
                     >
-                      System default
+                      {t("common.systemDefault")}
                     </MenuItem>
                     {inputDevices.map((d) => (
                       <MenuItem
@@ -208,13 +210,13 @@ export function MicScreen() {
               </div>
               <div className="channel-control-block mic-name-control">
                 <div>
-                  <div className="rtitle">Name</div>
+                  <div className="rtitle">{t("microphone.name")}</div>
                 </div>
                 <input
                   className="menu-input"
                   value={micConfig.output_label}
                   maxLength={32}
-                  title="How other apps list your processed mic"
+                  title={t("microphone.nameHint")}
                   onChange={(e) => void updateMic({ output_label: e.target.value })}
                 />
               </div>
@@ -227,7 +229,7 @@ export function MicScreen() {
               />
             </div>
 
-            <div className="section-label">Processing</div>
+            <div className="section-label">{t("microphone.processing.section")}</div>
             <div className="mic-processing-grid">
               <div className="card mic-processing-card">
                 <div className="processing-card-head">
@@ -236,17 +238,17 @@ export function MicScreen() {
                       on={micConfig.gate_enabled}
                       onClick={() => void updateMic({ gate_enabled: !micConfig.gate_enabled })}
                     />
-                    <div className="rtitle">Noise gate</div>
+                    <div className="rtitle">{t("processing.noiseGate")}</div>
                   </div>
                   <div className="processing-card-head-actions">
                     <ProcessingInfo
-                      label="Noise gate"
-                      text={'Cuts the microphone noise floor between words.\n\nRaise the threshold to reject more background sound.'}
+                      label={t("processing.noiseGate")}
+                      text={t("microphone.gate.info")}
                     />
                   </div>
                 </div>
                 <DspSlider
-                  label="Threshold"
+                  label={t("processing.threshold")}
                   min={-80}
                   max={-10}
                   step={1}
@@ -265,17 +267,17 @@ export function MicScreen() {
                       on={micConfig.comp_enabled}
                       onClick={() => void updateMic({ comp_enabled: !micConfig.comp_enabled })}
                     />
-                    <div className="rtitle">Compressor</div>
+                    <div className="rtitle">{t("processing.compressor")}</div>
                   </div>
                   <div className="processing-card-head-actions">
                     <ProcessingInfo
-                      label="Compressor"
-                      text={'Evens out loud peaks and quiet speech.\n\nThreshold chooses when compression starts. Ratio controls its strength.'}
+                      label={t("processing.compressor")}
+                      text={t("microphone.compressor.info")}
                     />
                   </div>
                 </div>
                 <DspSlider
-                  label="Threshold"
+                  label={t("processing.threshold")}
                   min={-60}
                   max={0}
                   step={1}
@@ -286,7 +288,7 @@ export function MicScreen() {
                   onChange={(v) => void updateMic({ comp_threshold_db: v })}
                 />
                 <DspSlider
-                  label="Ratio"
+                  label={t("microphone.ratio")}
                   min={1}
                   max={10}
                   step={0.5}
@@ -305,17 +307,17 @@ export function MicScreen() {
                       on={micConfig.limiter_enabled}
                       onClick={() => void updateMic({ limiter_enabled: !micConfig.limiter_enabled })}
                     />
-                    <div className="rtitle">Volume limiter</div>
+                    <div className="rtitle">{t("processing.limiter")}</div>
                   </div>
                   <div className="processing-card-head-actions">
                     <ProcessingInfo
-                      label="Volume limiter"
-                      text="Applies a hard final ceiling so the processed microphone cannot clip downstream."
+                      label={t("processing.limiter")}
+                      text={t("microphone.limiter.info")}
                     />
                   </div>
                 </div>
                 <DspSlider
-                  label="Ceiling"
+                  label={t("processing.ceiling")}
                   min={-12}
                   max={0}
                   step={0.5}
@@ -338,29 +340,29 @@ export function MicScreen() {
           setNewDeviceOpen(false);
           setCopyOpen(false);
         }}
-        title="New microphone channel"
+        title={t("microphone.create.title")}
       >
         <p className="modal-text">
-          Create another independently processed virtual microphone. One channel is recommended unless your workflow specifically needs separate inputs.
+          {t("microphone.create.body")}
         </p>
-        <label className="modal-label" htmlFor="new-mic-name">Virtual microphone name</label>
+        <label className="modal-label" htmlFor="new-mic-name">{t("microphone.create.name")}</label>
         <input
           id="new-mic-name"
           className="menu-input"
           value={newMicName}
           maxLength={32}
           autoFocus
-          placeholder="e.g. Harmonics"
+          placeholder={t("microphone.create.placeholder")}
           onChange={(event) => setNewMicName(event.target.value)}
         />
-        <label className="modal-label" htmlFor="new-mic-device">Input device</label>
+        <label className="modal-label" htmlFor="new-mic-device">{t("microphone.create.device")}</label>
         <div className="mic-create-picker">
           <button type="button" id="new-mic-device" className="select mic-create-select" onClick={() => setNewDeviceOpen((open) => !open)}>
-            <span>{newMicDevice === null ? "System default" : inputDevices.find((device) => device.name === newMicDevice)?.description ?? newMicDevice}</span>
+            <span>{newMicDevice === null ? t("common.systemDefault") : inputDevices.find((device) => device.name === newMicDevice)?.description ?? newMicDevice}</span>
             <Ms name="expand_more" />
           </button>
           <Popover open={newDeviceOpen} onClose={() => setNewDeviceOpen(false)} side="bottom" align="start">
-            <MenuItem selected={newMicDevice === null} showCheck onClick={() => { setNewMicDevice(null); setNewDeviceOpen(false); }}>System default</MenuItem>
+            <MenuItem selected={newMicDevice === null} showCheck onClick={() => { setNewMicDevice(null); setNewDeviceOpen(false); }}>{t("common.systemDefault")}</MenuItem>
             {inputDevices.map((device) => (
               <MenuItem key={device.name} selected={newMicDevice === device.name} showCheck onClick={() => { setNewMicDevice(device.name); setNewDeviceOpen(false); }}>
                 {device.description}
@@ -368,17 +370,17 @@ export function MicScreen() {
             ))}
           </Popover>
         </div>
-        <label className="modal-label" htmlFor="new-mic-copy">Processing</label>
+        <label className="modal-label" htmlFor="new-mic-copy">{t("microphone.create.processing")}</label>
         <div className="mic-create-picker">
           <button type="button" id="new-mic-copy" className="select mic-create-select" onClick={() => setCopyOpen((open) => !open)}>
-            <span>{copyFrom === null ? "Fresh setup" : `Copy ${micConfigs.find((mic) => mic.node_name === copyFrom)?.output_label ?? "microphone"}`}</span>
+            <span>{copyFrom === null ? t("microphone.create.fresh") : t("microphone.create.copy", { microphone: micConfigs.find((mic) => mic.node_name === copyFrom)?.output_label ?? t("microphone.create.generic") })}</span>
             <Ms name="expand_more" />
           </button>
           <Popover open={copyOpen} onClose={() => setCopyOpen(false)} side="bottom" align="start">
-            <MenuItem selected={copyFrom === null} showCheck onClick={() => { setCopyFrom(null); setCopyOpen(false); }}>Fresh setup</MenuItem>
+            <MenuItem selected={copyFrom === null} showCheck onClick={() => { setCopyFrom(null); setCopyOpen(false); }}>{t("microphone.create.fresh")}</MenuItem>
             {micConfigs.map((mic) => (
               <MenuItem key={mic.node_name} selected={copyFrom === mic.node_name} showCheck onClick={() => { setCopyFrom(mic.node_name); setCopyOpen(false); }}>
-                Copy {mic.output_label}
+                {t("microphone.create.copy", { microphone: mic.output_label })}
               </MenuItem>
             ))}
           </Popover>
@@ -397,20 +399,20 @@ export function MicScreen() {
               setCopyFrom(null);
             }}
           >
-            Create microphone
+            {t("microphone.create.action")}
           </button>
-          <button type="button" className="modal-btn" onClick={() => { setAddingMic(false); setNewDeviceOpen(false); setCopyOpen(false); }}>Cancel</button>
+          <button type="button" className="modal-btn" onClick={() => { setAddingMic(false); setNewDeviceOpen(false); setCopyOpen(false); }}>{t("common.action.cancel")}</button>
         </div>
       </Modal>
 
       <ConfirmModal
         open={deletingMic}
         onClose={() => setDeletingMic(false)}
-        title={`Delete ${micConfig.output_label}?`}
-        confirmLabel="Delete microphone"
+        title={t("microphone.delete.title", { microphone: micConfig.output_label })}
+        confirmLabel={t("microphone.delete.action")}
         onConfirm={() => void removeMicChannel(micNode)}
       >
-        This removes its virtual input and profile-specific processing. Applications using it will need another microphone selected. This cannot be undone.
+        {t("microphone.delete.body")}
       </ConfirmModal>
     </div>
   );

@@ -28,13 +28,19 @@ for upstream and bundled-asset notices.
 Sonux is an independent project and is not affiliated with or endorsed by
 SteelSeries.
 
-## What's new in 1.1.1
+## What's new in 1.2.0
 
-Version 1.1.1 is a maintenance update that keeps Sonux building cleanly with
-current Rust toolchains and refreshes its frontend dependencies. Version 1.1
-includes full profile management and automatic switching, validated
-configuration backups, multiple processed microphone channels, live dBFS
-meters, spatial custom channels, and improved device routing and failover.
+Version 1.2.0 introduces a redesigned, more consistent interface and a new
+first-run tour with faithful previews of the mixer, application routing,
+profiles, and microphone processing. Related PipeWire streams are resolved to
+one canonical application identity so routing, hiding, drag-and-drop, and
+inactive-history actions apply consistently to the complete application.
+
+Sonux can now load optional user-maintained language packs with safe English
+fallbacks. Audio startup is also more reliable: a WirePlumber pre-link policy
+routes remembered applications into their Sonux channel before their first
+audio reaches a physical output, removing the brief full-volume onset that
+could occur when a browser stream returned after being idle.
 
 See the [changelog](CHANGELOG.md) for the complete update notes and upgrade
 information.
@@ -78,6 +84,8 @@ welcome.
 ## Features
 
 - Route applications into Game, Chat, Media, Aux, or custom channels.
+- Route related helper and playback streams together by canonical application
+  identity.
 - Control channel volume, mute, output device, EQ, and playback processing.
 - Create recordable mixes for OBS and other capture software.
 - Process one or more microphone channels with gain, EQ, gate, compressor, and limiter.
@@ -85,13 +93,16 @@ welcome.
   devices, and use optional global mute shortcuts.
 - Create and restore configuration backups.
 - Render Game and Media 7.1 channels to binaural stereo for headphones.
+- Load optional custom interface translations with per-entry English fallback.
 
 ## How Sonux works
 
 Sonux builds its mixer on PipeWire. Applications using PulseAudio compatibility
 or native PipeWire appear in the audio graph and can be assigned to Game,
-Chat, Media, Aux, or user-created channels. WirePlumber rules keep those
-virtual devices and application assignments available between sessions.
+Chat, Media, Aux, or user-created channels. Sonux publishes remembered routes
+to a small WirePlumber policy hook, allowing a returning stream to select its
+assigned virtual channel before WirePlumber creates its first playback link.
+The regular live router remains available as a recovery path.
 
 Each channel has independent volume, output routing, and parametric EQ. Sonux
 also creates recordable mixes that applications such as OBS can select as
@@ -103,6 +114,29 @@ order. With headphone spatial audio enabled, Sonux filters each virtual speaker
 for the left and right ears and combines the eight channels into binaural
 stereo. If spatial processing is disabled or its HRTF data cannot be loaded,
 Sonux uses a conventional stereo downmix so channels are not silently lost.
+
+## Custom languages
+
+English is the complete built-in language and the fallback for every missing
+translation. Sonux loads optional user-maintained JSON language packs from
+`$XDG_CONFIG_HOME/sonux/locales` (normally `~/.config/sonux/locales`). Download
+the linked [`custom-example.json`](src/locales/custom-example.json), save a copy
+in that folder under a new filename, then update its locale information and
+translate the values you want to replace.
+
+From a Sonux source checkout, the equivalent commands are:
+
+```bash
+mkdir -p ~/.config/sonux/locales
+cp src/locales/custom-example.json ~/.config/sonux/locales/my-language.json
+```
+
+Restart Sonux after saving, then choose the language in **Settings →
+Appearance → Language**. Partial packs are supported, unknown or unsafe
+entries are ignored, and named placeholders such as `{{profile}}` must be
+preserved. Pluralized entries may use CLDR plural keys, and right-to-left packs
+can set `direction` to `rtl`. Native tray text, desktop notifications, and
+backend error details remain English for now.
 
 ## Screenshots
 

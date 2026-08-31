@@ -11,8 +11,11 @@ import { ChannelApps } from "../MixerBoard/ChannelApps";
 import { OutputSelect } from "../MixerBoard/OutputSelect";
 import { ChannelProcessing } from "./ChannelProcessing";
 import { AudioTestControls } from "../AudioTestControls";
+import { useI18n } from "../../i18n";
+import { applicationGroupKey, groupSeenApps } from "../../lib/appGroups";
 
 export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
+  const { t } = useI18n();
   const setChannelVolume = useMixerStore((state) => state.setChannelVolume);
   const toggleMute = useMixerStore((state) => state.toggleMute);
   const output = useMixerStore((state) => state.channelOutputs[channel.name] ?? null);
@@ -31,17 +34,15 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
   const [managingApps, setManagingApps] = useState(false);
   const setError = (message: string) => useMixerStore.setState({ error: message });
 
-  const liveIds = new Set(
-    appStreams.map((app) => `${app.match_prop}\0${app.match_value}`),
+  const assignedAppGroups = new Set(
+    appStreams
+      .filter((app) => app.assigned_sink === channel.name)
+      .map(applicationGroupKey),
   );
-  const appCount =
-    appStreams.filter((app) => app.assigned_sink === channel.name).length +
-    seenApps.filter(
-      (app) =>
-        !app.ignored &&
-        app.assigned_sink === channel.name &&
-        !liveIds.has(`${app.match_prop}\0${app.match_value}`),
-    ).length;
+  for (const app of groupSeenApps(seenApps)) {
+    if (!app.ignored && app.assigned_sinks.includes(channel.name)) assignedAppGroups.add(app.group_key);
+  }
+  const appCount = assignedAppGroups.size;
 
   return (
     <div className={`content channel-page ${channelAccentClass(channel)}`}>
@@ -57,28 +58,28 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
             onClick={() => void toggleMute(channel.name, !channel.muted)}
           >
             <Ms name={channel.muted ? "volume_off" : "volume_up"} />
-            {channel.muted ? "Muted" : "Mute"}
+            {t(channel.muted ? "channel.muted" : "channel.mute")}
           </button>
           <button
             type="button"
             className={"select channel-head-control" + (listening ? " on-mon" : "")}
             aria-pressed={listening}
-            title="Listen to this channel on the default output"
+            title={t("channel.listenHint")}
             onClick={() => void toggleMonitor(channel.name)}
           >
             <Ms name="headphones" />
-            {listening ? "Listening" : "Listen"}
+            {t(listening ? "channel.listening" : "channel.listen")}
           </button>
           <AudioTestControls kind="channel" sinkName={channel.name} />
         </div>
       </div>
 
       <div className="screen-scroll channel-scroll">
-        <div className="section-label">Channel</div>
+        <div className="section-label">{t("channel.section")}</div>
         <div className="card channel-controls-card">
           <div className="channel-control-block channel-preset-control">
             <div>
-              <div className="rtitle">Presets</div>
+              <div className="rtitle">{t("channel.presets")}</div>
             </div>
             <EqPresetMenu
               sinkName={channel.name}
@@ -89,19 +90,19 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
           </div>
           <div className="channel-control-block channel-volume-control">
             <div>
-              <div className="rtitle">Volume</div>
+              <div className="rtitle">{t("channel.volume")}</div>
             </div>
             <HSlider
               value={channel.volume_percent}
               max={MAX_VOLUME}
-              ariaLabel={`${channel.label} volume`}
+              ariaLabel={t("channel.volumeLabel", { channel: channel.label })}
               valueLabel={`${channel.volume_percent}% · ${volToDb(channel.volume_percent)}`}
               onChange={(value) => void setChannelVolume(channel.name, value)}
             />
           </div>
           <div className="channel-control-block">
             <div>
-              <div className="rtitle">Device</div>
+              <div className="rtitle">{t("channel.device")}</div>
             </div>
             <OutputSelect
               value={output}
@@ -116,10 +117,10 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
               <button
                 type="button"
                 className="select"
-                title="Choose applications assigned to this channel"
+                title={t("channel.appsHint")}
                 onClick={() => setManagingApps(true)}
               >
-                {appCount} {appCount === 1 ? "app" : "apps"}
+                {t(appCount === 1 ? "channel.appsOne" : "channel.appsMany", { count: appCount })}
               </button>
               <ChannelApps
                 channel={channel}
@@ -134,7 +135,7 @@ export function ChannelScreen({ channel }: Readonly<{ channel: VirtualSink }>) {
           <EqEditor channel={channel} />
         </div>
 
-        <div className="section-label">Playback processing</div>
+        <div className="section-label">{t("channel.processing.section")}</div>
         <ChannelProcessing channel={channel} />
       </div>
     </div>

@@ -47,6 +47,12 @@ pub trait AudioBackend: Send + Sync {
     /// Move an app stream to a sink. An empty `sink_name` means "unassign":
     /// the stream is returned to the system default sink.
     fn move_stream_to_sink(&self, stream_index: u32, sink_name: &str) -> Result<(), SinkError>;
+    /// Publish Sonux's complete app-routing table for the session manager's
+    /// pre-link policy. `None` removes the metadata while the channel graph is
+    /// unavailable; backends without native PipeWire metadata may ignore it.
+    fn set_app_route_metadata(&self, _value: Option<&str>) -> Result<(), SinkError> {
+        Ok(())
+    }
     /// Set the volume of a single app stream (sink input).
     /// Not in the original trait sketch, but required by the `set_app_volume`
     /// command - commands are forbidden from calling pactl directly.

@@ -3,6 +3,7 @@ import { perceptual } from "../../lib/audio";
 import { sleepMeter, subscribeLevel, wakeMeter } from "../../lib/liveMeters";
 import { meterFrameInterval, meterNeedsFrame } from "../../lib/meter";
 import { useMixerStore } from "../../store/mixer";
+import { useI18n } from "../../i18n";
 
 interface VuMeterProps {
   /** LevelStore name emitted by the native backend. */
@@ -34,6 +35,7 @@ const CLIP_AT = heightForDb(-0.2);
  * Under the pactl fallback no events arrive and the meter rests at zero.
  */
 export function VuMeter({ source, enabled, mono = false }: Readonly<VuMeterProps>) {
+  const { t } = useI18n();
   const mode = useMixerStore((state) => state.meterMode);
   const fillRef = useRef<HTMLDivElement>(null);
   const peakRef = useRef<HTMLDivElement>(null);
@@ -130,7 +132,7 @@ export function VuMeter({ source, enabled, mono = false }: Readonly<VuMeterProps
   }, [enabled, mode, mono, source]);
 
   return (
-    <div className={`vu-col${mode === "off" ? " disabled" : ""}`} title={mode === "off" ? "Live meters are disabled in Settings" : "Peak level in dBFS - tick at −6, red above −3, light latches on clipping"}>
+    <div className={`vu-col${mode === "off" ? " disabled" : ""}`} title={t(mode === "off" ? "meters.disabledHint" : "meters.peakHint")}>
       <div className="vu-clip" ref={clipRef} />
       <div className="meter">
         <div className="meter-fill" ref={fillRef} />

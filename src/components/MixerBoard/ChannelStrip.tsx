@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMixerStore } from "../../store/mixer";
-import type { VirtualSink } from "../../types";
+import type { AppIdentity, VirtualSink } from "../../types";
 import { defaultEqConfig, MAX_VOLUME } from "../../types";
 import { channelAccentClass, channelIcon, Ms, ICON_CHOICES } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
@@ -12,6 +12,8 @@ import { Fader } from "./Fader";
 import { OutputSelect } from "./OutputSelect";
 import { VuMeter } from "./VuMeter";
 import { EqPresetMenu } from "../Eq/EqPresetMenu";
+import { useI18n } from "../../i18n";
+import { applicationGroupKey, groupSeenApps } from "../../lib/appGroups";
 
 const APP_DRAG_TYPE = "application/x-sonux-routed-app";
 
@@ -21,8 +23,9 @@ interface DraggableApp {
   iconPath: string | null;
   active: boolean;
   streamIndexes: number[];
-  matchProp: string;
-  matchValue: string;
+  identities: AppIdentity[];
+  desktopId: string | null;
+  onChannel: boolean;
 }
 
 interface ChannelStripProps {
@@ -45,6 +48,7 @@ export function ChannelStrip({
   onStripDragOver,
   onOpenSettings,
 }: Readonly<ChannelStripProps>) {
+  const { t } = useI18n();
   const setChannelVolume = useMixerStore((s) => s.setChannelVolume);
   const toggleMute = useMixerStore((s) => s.toggleMute);
   const output = useMixerStore((s) => s.channelOutputs[channel.name] ?? null);
@@ -59,8 +63,9 @@ export function ChannelStrip({
   const monitoring = useMixerStore((s) => s.monitors[channel.name] ?? false);
   const toggleMonitor = useMixerStore((s) => s.toggleMonitor);
   const appStreams = useMixerStore((s) => s.appStreams);
-  const routeApp = useMixerStore((s) => s.routeApp);
-  const setAppAssignment = useMixerStore((s) => s.setAppAssignment);
+  const seenApps = useMixerStore((s) => s.seenApps);
+  const routeAppGroup = useMixerStore((s) => s.routeAppGroup);
+  const setAppGroupAssignment = useMixerStore((s) => s.setAppGroupAssignment);
   const eqConfig = useMixerStore((s) => s.eqConfigs[channel.name] ?? null) ?? defaultEqConfig();
   const setChannelEq = useMixerStore((s) => s.setChannelEq);
   const eqEnabled = eqConfig.enabled;
@@ -83,12 +88,16 @@ export function ChannelStrip({
 
   const appsByKey = new Map<string, DraggableApp>();
   for (const app of appStreams) {
-    const key = `${app.match_prop}\0${app.match_value}`;
-    if (app.assigned_sink !== channel.name) continue;
+    const key = applicationGroupKey(app);
     const existing = appsByKey.get(key);
     if (existing) {
       existing.streamIndexes.push(app.index);
       existing.active ||= app.active;
+      existing.desktopId ??= app.desktop_id;
+      existing.onChannel ||= app.assigned_sink === channel.name;
+      if (!existing.identities.some((identity) => (
+        identity.match_prop === app.match_prop && identity.match_value === app.match_value
+      ))) existing.identities.push({ match_prop: app.match_prop, match_value: app.match_value });
     } else {
       appsByKey.set(key, {
         key,
@@ -96,12 +105,24 @@ export function ChannelStrip({
         iconPath: app.icon_path,
         active: app.active,
         streamIndexes: [app.index],
-        matchProp: app.match_prop,
-        matchValue: app.match_value,
+        identities: [{ match_prop: app.match_prop, match_value: app.match_value }],
+        desktopId: app.desktop_id,
+        onChannel: app.assigned_sink === channel.name,
       });
     }
   }
-  const apps = Array.from(appsByKey.values());
+  for (const history of groupSeenApps(seenApps)) {
+    const existing = appsByKey.get(history.group_key);
+    if (!existing) continue;
+    for (const identity of history.identities) {
+      if (!existing.identities.some((candidate) => (
+        candidate.match_prop === identity.match_prop && candidate.match_value === identity.match_value
+      ))) existing.identities.push(identity);
+    }
+    existing.name = history.alias ?? existing.name;
+    existing.iconPath ??= history.icon_path;
+  }
+  const apps = Array.from(appsByKey.values()).filter((app) => app.onChannel);
   apps.sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
 
   const hasAppDrag = (event: React.DragEvent) =>
@@ -115,19 +136,12 @@ export function ChannelStrip({
     try {
       const app = JSON.parse(raw) as DraggableApp;
       if (app.streamIndexes.length > 0) {
-        for (const streamIndex of app.streamIndexes) void routeApp(streamIndex, channel.name);
-        void setAppAssignment(
-          { match_prop: app.matchProp, match_value: app.matchValue },
-          channel.name,
-        );
+        void routeAppGroup(app.streamIndexes, app.identities, app.desktopId, channel.name);
       } else {
-        void setAppAssignment(
-          { match_prop: app.matchProp, match_value: app.matchValue },
-          channel.name,
-        );
+        void setAppGroupAssignment(app.identities, channel.name);
       }
     } catch {
-      useMixerStore.setState({ error: "The dragged application could not be routed." });
+      useMixerStore.setState({ error: t("mixer.routeError") });
     }
   };
 
@@ -161,7 +175,7 @@ export function ChannelStrip({
         <span
           className="strip-grip"
           draggable
-          title="Drag to reorder"
+          title={t("mixer.dragReorder")}
           onDragStart={onGripDragStart}
           onDragEnd={onGripDragEnd}
         >
@@ -172,8 +186,8 @@ export function ChannelStrip({
         <button
           type="button"
           className="strip-x"
-          aria-label={`Delete channel ${channel.label}`}
-          title="Delete channel"
+          aria-label={t("mixer.channel.deleteNamed", { channel: channel.label })}
+          title={t("mixer.channel.delete")}
           onClick={() => setConfirmingDelete(true)}
         >
           <Ms name="close" />
@@ -186,8 +200,8 @@ export function ChannelStrip({
             <button
               type="button"
               className="strip-icon strip-icon-btn"
-              title="Change icon"
-              aria-label={`Change icon for ${channel.label}`}
+              title={t("mixer.channel.changeIcon")}
+              aria-label={t("mixer.channel.changeIconNamed", { channel: channel.label })}
               onClick={() => setPickingIcon(true)}
             >
               <Ms name={channelIcon(channel)} />
@@ -232,7 +246,7 @@ export function ChannelStrip({
           ) : (
             <div
               className="strip-name strip-name-editable"
-              title="Double-click to rename"
+              title={t("mixer.renameHint")}
               onDoubleClick={() => {
                 setDraft(channel.label);
                 setEditing(true);
@@ -246,10 +260,10 @@ export function ChannelStrip({
           <button
             type="button"
             className="strip-meta strip-meta-btn"
-            title="Choose which apps play through this channel"
+            title={t("channel.appsHint")}
             onClick={() => setManagingApps(true)}
           >
-            {appCount} {appCount === 1 ? "app" : "apps"}
+            {t(appCount === 1 ? "channel.appsOne" : "channel.appsMany", { count: appCount })}
             <Ms name="expand_more" style={{ fontSize: 13 }} />
           </button>
           <ChannelApps
@@ -274,7 +288,7 @@ export function ChannelStrip({
         <Fader
           value={channel.volume_percent}
           max={MAX_VOLUME}
-          ariaLabel={`${channel.label} volume`}
+          ariaLabel={t("channel.volumeLabel", { channel: channel.label })}
           onChange={(v) => void setChannelVolume(channel.name, v)}
         />
         <VuMeter source={channel.name} enabled={!channel.muted} />
@@ -292,7 +306,7 @@ export function ChannelStrip({
           className={"sbtn" + (channel.muted ? " on-mute" : "")}
           onClick={() => void toggleMute(channel.name, !channel.muted)}
           aria-pressed={channel.muted}
-          title={channel.muted ? "Unmute" : "Mute"}
+          title={t(channel.muted ? "mixer.unmute" : "channel.mute")}
         >
           <Ms name={channel.muted ? "volume_off" : "volume_up"} style={{ fontSize: 16 }} />
         </button>
@@ -301,7 +315,7 @@ export function ChannelStrip({
           className={"sbtn" + (monitoring ? " on-mon" : "")}
           onClick={() => void toggleMonitor(channel.name)}
           aria-pressed={monitoring}
-          title="Monitor - listen to this channel on the default output"
+          title={t("channel.listenHint")}
         >
           <Ms name="headphones" style={{ fontSize: 16 }} />
         </button>
@@ -310,23 +324,23 @@ export function ChannelStrip({
           className={"sbtn" + (eqEnabled ? " on-eq" : "")}
           onClick={onOpenSettings}
           aria-pressed={eqEnabled}
-          title={`Open ${channel.label} settings`}
+          title={t("mixer.channel.settings", { channel: channel.label })}
         >
           <Ms name="tune" style={{ fontSize: 16 }} />
         </button>
       </div>
 
-      <div className="strip-apps" aria-label={`Applications routed to ${channel.label}`}>
-        <div className="strip-apps-label">Apps</div>
+      <div className="strip-apps" aria-label={t("mixer.channel.routedApps", { channel: channel.label })}>
+        <div className="strip-apps-label">{t("onboarding.flow.apps")}</div>
         {apps.length === 0 ? (
-          <div className="strip-apps-empty">Drop apps here</div>
+          <div className="strip-apps-empty">{t("mixer.channel.dropApps")}</div>
         ) : (
           apps.map((app) => (
             <div
               className={"strip-app-chip" + (app.active ? " active" : "")}
               key={app.key}
               draggable
-              title={`Drag ${app.name} to another channel`}
+              title={t("mixer.channel.dragApp", { application: app.name })}
               onDragStart={(event) => {
                 event.stopPropagation();
                 event.dataTransfer.effectAllowed = "move";
@@ -338,7 +352,7 @@ export function ChannelStrip({
                 <AppIcon iconPath={app.iconPath} />
               </span>
               <span className="strip-app-name">{app.name}</span>
-              {app.active && <span className="strip-app-live" title="Running" />}
+              {app.active && <span className="strip-app-live" title={t("mixer.running")} />}
             </div>
           ))
         )}
@@ -356,12 +370,11 @@ export function ChannelStrip({
       <ConfirmModal
         open={confirmingDelete}
         onClose={() => setConfirmingDelete(false)}
-        title={`Delete "${channel.label}"?`}
-        confirmLabel="Delete channel"
+        title={t("mixer.channel.deleteTitle", { channel: channel.label })}
+        confirmLabel={t("mixer.channel.delete")}
         onConfirm={() => void removeChannel(channel.name)}
       >
-        Apps routed to this channel return to the default output. Its saved
-        routing is removed.
+        {t("mixer.channel.deleteBody")}
       </ConfirmModal>
     </div>
   );

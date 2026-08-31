@@ -11,6 +11,7 @@ import type {
   OutputDevice,
   ProfileInfo,
   SeenApp,
+  AppIdentity,
   VirtualSink,
 } from "../types";
 
@@ -82,6 +83,15 @@ interface ProfileSnapshot {
   seenApps: SeenApp[];
   profiles: ProfileInfo[];
   buses: BusDef[];
+}
+
+interface StartupPrefs {
+  onboarded: boolean;
+  balance_a: string | null;
+  balance_b: string | null;
+  show_balance: boolean;
+  multiple_mics: boolean;
+  meter_mode: MeterMode;
 }
 
 async function readProfileSnapshot(selectedMicNode: string): Promise<ProfileSnapshot> {
@@ -165,12 +175,15 @@ interface MixerStore {
   seenApps: SeenApp[];
   fetchSeenApps: () => Promise<void>;
   setAppIgnored: (app: { match_prop: string; match_value: string }, ignored: boolean) => Promise<void>;
+  setAppGroupIgnored: (identities: AppIdentity[], ignored: boolean) => Promise<void>;
   forgetApp: (app: { match_prop: string; match_value: string }) => Promise<void>;
+  forgetAppGroup: (identities: AppIdentity[]) => Promise<void>;
   /** Pre-route an app that isn't currently running (null clears). */
   setAppAssignment: (
     app: { match_prop: string; match_value: string },
     sinkName: string | null,
   ) => Promise<void>;
+  setAppGroupAssignment: (identities: AppIdentity[], sinkName: string | null) => Promise<void>;
   /** Channel management: labels are free-form, sink names are stable. */
   addChannel: (label: string, icon: string | null, spatial?: boolean) => Promise<void>;
   renameChannel: (sinkName: string, label: string) => Promise<void>;
@@ -203,6 +216,12 @@ interface MixerStore {
   /** Dismiss the error banner. */
   clearError: () => void;
   initialized: boolean;
+  initializing: boolean;
+  /** Initial configuration snapshot completed. Retried by the visible-window
+   * slow poll after a transient startup IPC failure. */
+  startupSynchronized: boolean;
+  startupSynchronizing: boolean;
+  startupSyncError: string | null;
   /** True on the native PipeWire backend; false on the pactl fallback
    * (mixes/mic/monitoring unavailable). Null until known. */
   backendNative: boolean | null;
@@ -223,11 +242,18 @@ interface MixerStore {
 
   /** Create the virtual sinks and load initial state. */
   initialize: () => Promise<void>;
+  synchronizeStartupState: () => Promise<void>;
   fetchChannels: () => Promise<void>;
   fetchAppStreams: () => Promise<void>;
   setChannelVolume: (sinkName: string, volume: number) => Promise<void>;
   toggleMute: (sinkName: string, muted: boolean) => Promise<void>;
   routeApp: (streamIndex: number, sinkName: string) => Promise<void>;
+  routeAppGroup: (
+    streamIndices: number[],
+    identities: AppIdentity[],
+    desktopId: string | null,
+    sinkName: string,
+  ) => Promise<void>;
   setAppVolume: (streamIndex: number, volume: number) => Promise<void>;
   fetchProfiles: () => Promise<void>;
   loadProfile: (name: string) => Promise<boolean>;
@@ -268,6 +294,10 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   error: null,
   clearError: () => set({ error: null }),
   initialized: false,
+  initializing: false,
+  startupSynchronized: false,
+  startupSynchronizing: false,
+  startupSyncError: null,
   backendNative: null,
   showOnboarding: false,
   onboardingReplay: false,
@@ -344,56 +374,69 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
   },
 
   initialize: async () => {
-    if (get().initialized) return;
+    if (get().initialized || get().initializing) return;
+    set({ initializing: true });
     try {
       await invoke("init_virtual_devices");
-      set({ initialized: true, error: null });
-      void invoke<{ native: boolean }>("get_backend_info")
-        .then((i) => set({ backendNative: i.native }))
-        .catch(() => {});
-      void invoke<{
-        onboarded: boolean;
-        balance_a: string | null;
-        balance_b: string | null;
-        show_balance: boolean;
-        multiple_mics: boolean;
-        meter_mode: MeterMode;
-      }>("get_prefs")
-        .then((p) => {
-          set({
-            balanceA: p.balance_a,
-            balanceB: p.balance_b,
-            showBalance: p.show_balance,
-            multipleMics: p.multiple_mics,
-            meterMode: p.meter_mode,
-          });
-          if (!p.onboarded) set({ showOnboarding: true });
-        })
-        .catch(() => {});
-      await Promise.all([
-        get().fetchChannels(),
-        get().fetchAppStreams(),
-        get().fetchProfiles(),
-        get().fetchOutputs(),
-        get().fetchEq(),
-        get().fetchMic(),
-        get().fetchMicClients(),
-        get().fetchBuses(),
-      ]);
-      // Active profile is tracked backend-side (survives restarts).
-      try {
-        const active = await invoke<string | null>("get_active_profile");
-        if (active) {
-          set({ activeProfile: active });
-        } else if (get().profiles.some((p) => p.name === "Default")) {
-          // First run: the backend just created "Default" from this layout.
-          set({ activeProfile: "Default" });
-        }
-      } catch {
-        /* older backend without the command - banner-worthy errors surface elsewhere */
-      }
+      set({ initialized: true, initializing: false, error: null });
+      await get().synchronizeStartupState();
     } catch (e) {
-      set({ error: String(e) });
+      set({ initializing: false, error: String(e) });
+    }
+  },
+
+  synchronizeStartupState: async () => {
+    if (!get().initialized || get().startupSynchronized || get().startupSynchronizing) return;
+    const refreshVersion = profileRefreshVersion;
+    set({ startupSynchronizing: true });
+    try {
+      const results = await Promise.allSettled([
+        readProfileSnapshot(get().selectedMicNode),
+        invoke<{ native: boolean }>("get_backend_info"),
+        invoke<StartupPrefs>("get_prefs"),
+      ]);
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+      const [snapshot, backendInfo, prefs] = results.map((result) => {
+        if (result.status !== "fulfilled") throw result.reason;
+        return result.value;
+      }) as [ProfileSnapshot, { native: boolean }, StartupPrefs];
+      if (refreshVersion !== profileRefreshVersion) {
+        set({ startupSynchronizing: false });
+        return;
+      }
+      const current = get();
+      if (prefs.meter_mode === "off") clearPublishedLevels();
+      set({
+        ...snapshot,
+        activeProfile: snapshot.activeProfile
+          ?? (snapshot.profiles.some((profile) => profile.name === "Default") ? "Default" : null),
+        backendNative: backendInfo.native,
+        balanceA: prefs.balance_a,
+        balanceB: prefs.balance_b,
+        showBalance: prefs.show_balance,
+        multipleMics: prefs.multiple_mics,
+        meterMode: prefs.meter_mode,
+        showOnboarding: current.onboardingReplay ? current.showOnboarding : !prefs.onboarded,
+        startupSynchronized: true,
+        startupSynchronizing: false,
+        startupSyncError: null,
+        error: current.startupSyncError !== null && current.error === current.startupSyncError
+          ? null
+          : current.error,
+      });
+    } catch (e) {
+      if (refreshVersion !== profileRefreshVersion) {
+        set({ startupSynchronizing: false });
+        return;
+      }
+      const startupSyncError = String(e);
+      set({
+        startupSynchronized: false,
+        startupSynchronizing: false,
+        startupSyncError,
+        error: startupSyncError,
+      });
     }
   },
 
@@ -471,6 +514,30 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
       set({ error: String(e) });
     } finally {
       await get().fetchAppStreams();
+    }
+  },
+
+  routeAppGroup: async (streamIndices, identities, desktopId, sinkName) => {
+    const indexSet = new Set(streamIndices);
+    set((state) => ({
+      appStreams: state.appStreams.map((app) =>
+        indexSet.has(app.index)
+          ? { ...app, assigned_sink: sinkName === "" ? null : sinkName }
+          : app,
+      ),
+    }));
+    try {
+      await invoke("route_app_group_to_channel", {
+        streamIndices,
+        identities,
+        desktopId,
+        sinkName,
+        expectedProfile: get().activeProfile,
+      });
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      await Promise.all([get().fetchAppStreams(), get().fetchSeenApps()]);
     }
   },
 
@@ -799,6 +866,15 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     }
   },
 
+  setAppGroupIgnored: async (identities, ignored) => {
+    try {
+      await invoke("set_app_group_ignored", { identities, ignored });
+      await Promise.all([get().fetchSeenApps(), get().fetchAppStreams()]);
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   forgetApp: async (app) => {
     try {
       await invoke("forget_app", {
@@ -812,11 +888,36 @@ export const useMixerStore = create<MixerStore>((set, get) => ({
     }
   },
 
+  forgetAppGroup: async (identities) => {
+    try {
+      await invoke("forget_app_group", {
+        identities,
+        expectedProfile: get().activeProfile,
+      });
+      await get().fetchSeenApps();
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
   setAppAssignment: async (app, sinkName) => {
     try {
       await invoke("set_app_assignment", {
         matchProp: app.match_prop,
         matchValue: app.match_value,
+        sinkName: sinkName ?? "",
+        expectedProfile: get().activeProfile,
+      });
+      await get().fetchSeenApps();
+    } catch (e) {
+      set({ error: String(e) });
+    }
+  },
+
+  setAppGroupAssignment: async (identities, sinkName) => {
+    try {
+      await invoke("set_app_group_assignment", {
+        identities,
         sinkName: sinkName ?? "",
         expectedProfile: get().activeProfile,
       });

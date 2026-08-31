@@ -16,17 +16,19 @@ import { Tooltip } from "./components/Tooltip";
 import { useAudio } from "./hooks/useAudio";
 import { restartApplication, useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { takeRestoreWarning } from "./lib/restoreWarning";
+import { useI18n, type TranslationKey } from "./i18n";
 import { useMixerStore } from "./store/mixer";
 
 const SIDE_NAV = [
-  { id: "mixer", icon: "graphic_eq", label: "Mixer" },
-  { id: "apps", icon: "grid_view", label: "Apps" },
-  { id: "switching", icon: "bookmarks", label: "Profiles" },
+  { id: "mixer", icon: "graphic_eq", label: "navigation.mixer" },
+  { id: "apps", icon: "grid_view", label: "navigation.apps" },
+  { id: "switching", icon: "bookmarks", label: "navigation.profiles" },
 ] as const;
 
 type NavId = (typeof SIDE_NAV)[number]["id"] | "mic" | "settings" | `channel:${string}`;
 
 export default function App() {
+  const { t } = useI18n();
   useAudio();
   useGlobalShortcuts();
   const [nav, setNav] = useState<NavId>("mixer");
@@ -55,11 +57,11 @@ export default function App() {
     if (selectedChannelName && !selectedChannel && channels.length > 0) setNav("mixer");
   }, [channels.length, selectedChannel, selectedChannelName]);
 
-  let currentLabel = "Mixer";
-  if (nav === "apps") currentLabel = "Apps";
-  else if (nav === "switching") currentLabel = "Profiles";
-  else if (nav === "mic") currentLabel = selectedMic?.output_label ?? "Mic";
-  else if (nav === "settings") currentLabel = "Settings";
+  let currentLabel = t("navigation.mixer");
+  if (nav === "apps") currentLabel = t("navigation.applications");
+  else if (nav === "switching") currentLabel = t("navigation.profiles");
+  else if (nav === "mic") currentLabel = selectedMic?.output_label ?? t("navigation.microphone");
+  else if (nav === "settings") currentLabel = t("navigation.settings");
   else if (selectedChannel) currentLabel = selectedChannel.label;
 
   let screen;
@@ -101,22 +103,22 @@ export default function App() {
       {error && (
         <div className="error-banner" role="alert">
           <span className="error-banner-msg">
-            <strong>Audio error:</strong> {error}
+            <strong>{t("errors.audio")}</strong> {error}
           </span>
           <button
             type="button"
             className="error-banner-restart"
-            title="Restart the application without deleting settings"
+            title={t("errors.restartHint")}
             onClick={restartApplication}
           >
             <Ms name="restart_alt" style={{ fontSize: 15 }} />
-            Restart
+            {t("common.action.restart")}
           </button>
           <button
             type="button"
             className="error-banner-x"
-            aria-label="Dismiss error"
-            title="Dismiss"
+            aria-label={t("common.action.dismiss")}
+            title={t("common.action.dismiss")}
             onClick={clearError}
           >
             <Ms name="close" style={{ fontSize: 16 }} />
@@ -134,7 +136,7 @@ export default function App() {
               onClick={() => setNav(n.id)}
             >
               <Ms name={n.icon} />
-              <span className="nav-label">{n.label}</span>
+              <span className="nav-label">{t(n.label as TranslationKey)}</span>
             </button>
           ))}
           <div className="rail-spacer" />
@@ -144,7 +146,7 @@ export default function App() {
             onClick={() => setNav("settings")}
           >
             <Ms name="settings" />
-            <span className="nav-label">Settings</span>
+            <span className="nav-label">{t("navigation.settings")}</span>
           </button>
           {version && <div className="rail-version">v{version.replace(/\.0$/, "")}</div>}
         </nav>
@@ -153,7 +155,7 @@ export default function App() {
           <div className="workspace-bar">
             <nav
               className="workspace-tabs"
-              aria-label="Audio workspace"
+              aria-label={t("navigation.audioWorkspace")}
               onWheel={(event) => {
                 if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth || event.deltaY === 0) return;
                 event.currentTarget.scrollLeft += event.deltaY;
@@ -166,7 +168,7 @@ export default function App() {
                 ref={nav === "mixer" ? activeWorkspaceTab : undefined}
                 onClick={() => setNav("mixer")}
               >
-                Mixer
+                {t("navigation.mixer")}
               </button>
               {channels.map((channel) => (
                 <button
@@ -194,7 +196,7 @@ export default function App() {
                     }}
                   >
                     <Ms name={index === 0 ? "mic" : "mic_external_on"} />
-                    {index === 0 ? "Mic" : mic.output_label}
+                    {index === 0 ? t("navigation.microphone") : mic.output_label}
                   </button>
                 );
               })}

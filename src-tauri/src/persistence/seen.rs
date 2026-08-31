@@ -18,6 +18,10 @@ pub struct SeenEntry {
     /// Display name at last sighting (resolver output, pre-alias).
     pub display_name: String,
     pub icon_name: Option<String>,
+    /// Stable desktop application id when one could be resolved. Optional for
+    /// compatibility with existing history and apps without desktop entries.
+    #[serde(default)]
+    pub desktop_id: Option<String>,
     /// Unix seconds of the last sighting.
     pub last_seen: u64,
     /// Ignored apps are hidden from the app list and never auto-routed.
@@ -104,15 +108,22 @@ impl SeenApps {
         match_value: &str,
         display_name: &str,
         icon_name: Option<&str>,
+        desktop_id: Option<&str>,
         now: u64,
     ) -> bool {
         if let Some(entry) = self.entry_mut(match_prop, match_value) {
             entry.last_seen = now;
-            let changed =
-                entry.display_name != display_name || entry.icon_name.as_deref() != icon_name;
+            // Resolution can temporarily lose process or desktop metadata.
+            // Never erase a canonical ID on a miss; a newly resolved ID may
+            // still replace it when desktop integration changes legitimately.
+            let next_desktop_id = desktop_id.or(entry.desktop_id.as_deref());
+            let changed = entry.display_name != display_name
+                || entry.icon_name.as_deref() != icon_name
+                || entry.desktop_id.as_deref() != next_desktop_id;
             if changed {
                 entry.display_name = display_name.to_string();
                 entry.icon_name = icon_name.map(str::to_string);
+                entry.desktop_id = next_desktop_id.map(str::to_string);
             }
             changed
         } else {
@@ -121,6 +132,7 @@ impl SeenApps {
                 match_value: match_value.to_string(),
                 display_name: display_name.to_string(),
                 icon_name: icon_name.map(str::to_string),
+                desktop_id: desktop_id.map(str::to_string),
                 last_seen: now,
                 ignored: false,
             });
@@ -178,6 +190,7 @@ mod tests {
             "Firefox",
             "Firefox",
             Some("firefox"),
+            Some("firefox"),
             100
         ));
         // Pure last_seen bump - not worth persisting.
@@ -185,6 +198,7 @@ mod tests {
             "application.name",
             "Firefox",
             "Firefox",
+            Some("firefox"),
             Some("firefox"),
             200
         ));
@@ -194,11 +208,35 @@ mod tests {
                 .last_seen,
             200
         );
+        assert_eq!(
+            seen.get("application.name", "Firefox")
+                .expect("entry")
+                .desktop_id
+                .as_deref(),
+            Some("firefox")
+        );
+        // A transient metadata miss does not erase the learned canonical ID.
+        assert!(!seen.upsert(
+            "application.name",
+            "Firefox",
+            "Firefox",
+            Some("firefox"),
+            None,
+            250
+        ));
+        assert_eq!(
+            seen.get("application.name", "Firefox")
+                .expect("entry")
+                .desktop_id
+                .as_deref(),
+            Some("firefox")
+        );
         // Display change - persist.
         assert!(seen.upsert(
             "application.name",
             "Firefox",
             "Firefox ESR",
+            Some("firefox"),
             Some("firefox"),
             300
         ));
@@ -207,7 +245,7 @@ mod tests {
     #[test]
     fn ignore_and_forget() {
         let mut seen = SeenApps::default();
-        seen.upsert("media.name", "audio-src", "Audio-src", None, 1);
+        seen.upsert("media.name", "audio-src", "Audio-src", None, None, 1);
         assert!(seen.set_ignored("media.name", "audio-src", true));
         assert!(seen.is_ignored("media.name", "audio-src"));
         assert!(!seen.set_ignored("media.name", "nope", true));
@@ -220,10 +258,38 @@ mod tests {
         const DAY: u64 = 24 * 60 * 60;
         let now = 100 * DAY;
         let mut seen = SeenApps::default();
-        seen.upsert("application.name", "recent", "Recent", None, now - DAY);
-        seen.upsert("application.name", "stale", "Stale", None, now - 8 * DAY);
-        seen.upsert("application.name", "routed", "Routed", None, now - 60 * DAY);
-        seen.upsert("application.name", "hidden", "Hidden", None, now - 60 * DAY);
+        seen.upsert(
+            "application.name",
+            "recent",
+            "Recent",
+            None,
+            None,
+            now - DAY,
+        );
+        seen.upsert(
+            "application.name",
+            "stale",
+            "Stale",
+            None,
+            None,
+            now - 8 * DAY,
+        );
+        seen.upsert(
+            "application.name",
+            "routed",
+            "Routed",
+            None,
+            None,
+            now - 60 * DAY,
+        );
+        seen.upsert(
+            "application.name",
+            "hidden",
+            "Hidden",
+            None,
+            None,
+            now - 60 * DAY,
+        );
         seen.set_ignored("application.name", "hidden", true);
 
         let routed = |_prop: &str, value: &str| value == "routed";
@@ -243,7 +309,7 @@ mod tests {
     fn prune_tolerates_timestamps_from_the_future() {
         let mut seen = SeenApps::default();
         // A clock jump backwards must not make every entry look ancient.
-        seen.upsert("application.name", "ahead", "Ahead", None, 5_000);
+        seen.upsert("application.name", "ahead", "Ahead", None, None, 5_000);
         assert!(!seen.prune(1_000, MAX_SEEN_AGE_SECS, |_, _| false));
         assert!(seen.get("application.name", "ahead").is_some());
     }

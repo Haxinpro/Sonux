@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::persistence::autostart;
@@ -11,6 +11,16 @@ use crate::persistence::prefs::{DeviceLabelStyle, MeterMode, Prefs};
 use crate::state::AppState;
 
 const RESTART_PARENT_ARG: &str = "--sink-restart-parent";
+
+#[tauri::command]
+pub(crate) fn get_language_pack_catalog() -> crate::language_packs::LanguagePackCatalog {
+    crate::language_packs::catalog()
+}
+
+#[tauri::command]
+pub(crate) fn open_language_pack_location() -> Result<(), String> {
+    crate::language_packs::open_location()
+}
 
 fn settings_mutation_failure(
     error: impl std::fmt::Display,
@@ -546,6 +556,14 @@ pub fn reset_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<()
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     spawn_detached_replacement()?;
+    // The replacement waits for this PID, so tear down only after it has been
+    // queued successfully. Clearing route metadata is essential: publishing
+    // the same value from the replacement is a metadata no-op and would not
+    // produce the WirePlumber acknowledgement that guards pre-link routing.
+    let state = app.state::<AppState>();
+    for error in state.teardown_virtual_sinks() {
+        eprintln!("sonux: restart teardown: {error}");
+    }
     app.exit(0);
     Ok(())
 }

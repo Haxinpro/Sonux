@@ -48,7 +48,7 @@ export function Tooltip() {
       setContent(null);
     };
 
-    const reconcile = (target: Element | null) => {
+    const reconcile = (target: Element | null, immediate = false) => {
       const ancestry: Element[] = [];
       for (let element = target; element; element = element.parentElement) ancestry.push(element);
       const inside = new Set(ancestry);
@@ -95,11 +95,19 @@ export function Tooltip() {
         return;
       }
       anchor.current = next.el;
-      if (primary?.el === next.el && primary.text === next.text && primary.heading === next.heading) return;
+      if (primary?.el === next.el && primary.text === next.text && primary.heading === next.heading) {
+        if (immediate && !visible) {
+          window.clearTimeout(timer.current);
+          visible = true;
+          setContent({ heading: next.heading, text: next.text });
+        }
+        return;
+      }
       const sameAnchor = primary?.el === next.el;
       primary = next;
       window.clearTimeout(timer.current);
-      if (sameAnchor && visible) {
+      if (immediate || (sameAnchor && visible)) {
+        visible = true;
         setContent({ heading: next.heading, text: next.text });
       } else {
         visible = false;
@@ -117,8 +125,15 @@ export function Tooltip() {
 
     const onOut = (e: MouseEvent) => {
       const related = e.relatedTarget;
-      reconcile(related instanceof Element ? related : null);
+      const focused = document.activeElement;
+      const target = related instanceof Element
+        ? related
+        : focused instanceof Element ? focused : null;
+      reconcile(target, target === focused);
     };
+    const onFocusIn = (event: FocusEvent) => reconcile(event.target as Element | null, true);
+    const onFocusOut = (event: FocusEvent) => reconcile(event.relatedTarget as Element | null, true);
+    const onClick = (event: MouseEvent) => reconcile(event.target as Element | null, true);
 
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -146,12 +161,18 @@ export function Tooltip() {
 
     document.addEventListener("mouseover", onOver, true);
     document.addEventListener("mouseout", onOut, true);
+    document.addEventListener("focusin", onFocusIn, true);
+    document.addEventListener("focusout", onFocusOut, true);
+    document.addEventListener("click", onClick, true);
     window.addEventListener("scroll", hide, true);
     document.addEventListener("pointerdown", hide, true);
     window.addEventListener("blur", hide);
     return () => {
       document.removeEventListener("mouseover", onOver, true);
       document.removeEventListener("mouseout", onOut, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+      document.removeEventListener("focusout", onFocusOut, true);
+      document.removeEventListener("click", onClick, true);
       window.removeEventListener("scroll", hide, true);
       document.removeEventListener("pointerdown", hide, true);
       window.removeEventListener("blur", hide);

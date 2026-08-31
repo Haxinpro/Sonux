@@ -93,4 +93,21 @@ describe("Tooltip delegation", () => {
     expect(parent.title).toBe("Parent fallback");
     parent.remove();
   });
+
+  it("shows detailed help immediately for keyboard focus and tap", () => {
+    const help = document.createElement("button");
+    help.dataset.tooltipTitle = "Start at login";
+    help.dataset.tooltipText = "Start Sonux with your desktop session.";
+    document.body.append(help);
+
+    act(() => help.focus());
+    expect(document.querySelector(".app-tooltip")?.textContent).toContain("Start Sonux with your desktop session.");
+
+    act(() => {
+      help.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      help.click();
+    });
+    expect(document.querySelector(".app-tooltip")?.textContent).toContain("Start Sonux with your desktop session.");
+    help.remove();
+  });
 });

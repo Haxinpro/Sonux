@@ -6,6 +6,65 @@ use crate::state::AppState;
 /// How often the poll force-saves app history to refresh `last_seen` on disk.
 const SEEN_FLUSH_SECS: u64 = 15 * 60;
 
+/// Collapse the live snapshot to externally selected managed routes that are
+/// unambiguous for an exact PipeWire identity. Two simultaneous streams can
+/// share an identity; if they disagree, hash-map iteration order must not
+/// decide which route Sonux persists.
+fn unambiguous_managed_targets(
+    streams: &[AppStream],
+) -> std::collections::HashMap<(String, String), String> {
+    let mut observed: std::collections::HashMap<(String, String), Option<String>> =
+        std::collections::HashMap::new();
+    for stream in streams {
+        let Some(target) = stream.assigned_sink.as_ref() else {
+            continue;
+        };
+        let key = (stream.match_prop.clone(), stream.match_value.clone());
+        observed
+            .entry(key)
+            .and_modify(|current| {
+                if current.as_deref() != Some(target.as_str()) {
+                    *current = None;
+                }
+            })
+            .or_insert_with(|| Some(target.clone()));
+    }
+    observed
+        .into_iter()
+        .filter_map(|(identity, target)| target.map(|target| (identity, target)))
+        .collect()
+}
+
+fn single_canonical_assignment(
+    seen: &crate::persistence::seen::SeenApps,
+    assignments: &crate::persistence::assignments::Assignments,
+    desktop_id: &str,
+) -> Option<String> {
+    let mut target: Option<&str> = None;
+    for entry in &seen.apps {
+        if entry.desktop_id.as_deref() != Some(desktop_id) {
+            continue;
+        }
+        let Some(candidate) = assignments.sink_for(&entry.match_prop, &entry.match_value) else {
+            continue;
+        };
+        match target {
+            None => target = Some(candidate),
+            Some(current) if current == candidate => {}
+            Some(_) => return None,
+        }
+    }
+    target.map(str::to_string)
+}
+
+fn canonical_group_is_ignored(seen: &crate::persistence::seen::SeenApps, desktop_id: &str) -> bool {
+    let mut members = seen
+        .apps
+        .iter()
+        .filter(|entry| entry.desktop_id.as_deref() == Some(desktop_id));
+    members.next().is_some_and(|first| first.ignored) && members.all(|entry| entry.ignored)
+}
+
 /// Current channel state (volume/mute as tracked by MixerState).
 #[tauri::command]
 pub fn get_virtual_devices(state: State<'_, AppState>) -> Result<Vec<VirtualSink>, String> {
@@ -53,11 +112,72 @@ pub fn poll_app_streams(state: &AppState) -> Result<Vec<AppStream>, String> {
     poll_app_streams_locked(state)
 }
 
+/// Add canonical desktop identity, display name and icon data to a raw
+/// backend snapshot. Shared by polling and group routing so commands resolve
+/// late-arriving helpers with the same rules as the UI snapshot.
+pub(crate) fn enrich_app_streams(
+    state: &AppState,
+    streams: &mut [AppStream],
+) -> Result<(), String> {
+    let desktop_hints = {
+        let mixer = state.lock_mixer()?;
+        mixer
+            .seen
+            .apps
+            .iter()
+            .filter_map(|entry| {
+                entry.desktop_id.as_ref().map(|desktop_id| {
+                    (
+                        (entry.match_prop.clone(), entry.match_value.clone()),
+                        desktop_id.clone(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+
+    for stream in streams {
+        let binary = (stream.match_prop == "application.process.binary")
+            .then_some(stream.match_value.as_str());
+        let stored_desktop_id = desktop_hints
+            .get(&(stream.match_prop.clone(), stream.match_value.clone()))
+            .map(String::as_str);
+        let desktop_id_hint = stream.desktop_id.as_deref().or(stored_desktop_id);
+        let resolved = crate::audio::icons::resolve(
+            &stream.app_name,
+            binary,
+            stream.icon_name.as_deref(),
+            stream.pid,
+            desktop_id_hint,
+        );
+        stream.icon_path = resolved.icon_path;
+        stream.desktop_id = resolved
+            .desktop_id
+            .or_else(|| desktop_id_hint.map(str::to_string));
+        if let Some(name) = resolved.display_name {
+            stream.app_name = name;
+        }
+    }
+    Ok(())
+}
+
 /// The application-stream polling transaction, for callers that already hold
 /// `profile_operations`. Keeping lock acquisition outside this helper lets the
 /// coherent profile snapshot reuse the exact routing/history transaction
 /// without recursively locking the non-reentrant profile mutex.
 pub(crate) fn poll_app_streams_locked(state: &AppState) -> Result<Vec<AppStream>, String> {
+    // Keep the session-manager policy synchronized even after profile/channel
+    // transactions that replace the complete assignment set. The native
+    // backend suppresses identical metadata writes.
+    let routes = {
+        let mixer = state.lock_mixer()?;
+        mixer
+            .initialized
+            .then(|| (mixer.assignments.clone(), mixer.seen.clone()))
+    };
+    if let Some((assignments, seen)) = routes.as_ref() {
+        state.publish_app_routes(Some(assignments), Some(seen))?;
+    }
     let mut streams = state
         .backend
         .list_app_streams()
@@ -65,20 +185,8 @@ pub(crate) fn poll_app_streams_locked(state: &AppState) -> Result<Vec<AppStream>
 
     // Desktop-entry resolution: real icon files and polished display names
     // ("spotify" binary → Spotify with its actual icon). Cached per identity.
-    for stream in &mut streams {
-        let binary = (stream.match_prop == "application.process.binary")
-            .then_some(stream.match_value.as_str());
-        let resolved = crate::audio::icons::resolve(
-            &stream.app_name,
-            binary,
-            stream.icon_name.as_deref(),
-            stream.pid,
-        );
-        stream.icon_path = resolved.icon_path;
-        if let Some(name) = resolved.display_name {
-            stream.app_name = name;
-        }
-    }
+    enrich_app_streams(state, &mut streams)?;
+    let observed_targets = unambiguous_managed_targets(&streams);
 
     let now = crate::persistence::unix_now();
     // Phase 1: under the lock, update history and *plan* auto-routing - but do
@@ -90,33 +198,72 @@ pub(crate) fn poll_app_streams_locked(state: &AppState) -> Result<Vec<AppStream>
     let (seen_to_save, assignment_change, planned) = {
         let mut mixer = state.lock_mixer()?;
         let mut structural_change = false;
-        let mut assignments_changed = false;
-        let mut adopted_indices = Vec::new();
+        let mut adopted_identities = std::collections::HashSet::new();
         let previous_assignments = mixer.assignments.clone();
         let mut next_assignments = previous_assignments.clone();
         for stream in &streams {
+            let was_known = mixer
+                .seen
+                .get(&stream.match_prop, &stream.match_value)
+                .is_some();
+            let inherit_ignored = !was_known
+                && stream
+                    .desktop_id
+                    .as_deref()
+                    .is_some_and(|desktop_id| canonical_group_is_ignored(&mixer.seen, desktop_id));
             structural_change |= mixer.seen.upsert(
                 &stream.match_prop,
                 &stream.match_value,
                 &stream.app_name,
                 stream.icon_name.as_deref(),
+                stream.desktop_id.as_deref(),
                 now,
             );
+            if inherit_ignored {
+                mixer
+                    .seen
+                    .set_ignored(&stream.match_prop, &stream.match_value, true);
+                structural_change = true;
+            }
 
             // An application may choose one of our virtual devices directly
             // in its own settings (Discord selecting Chat, for example).
             // Adopt that real PipeWire route so the inactive/history view and
             // future launches do not incorrectly call the app "unrouted".
-            if let Some(target) = stream.assigned_sink.as_deref() {
+            let identity = (stream.match_prop.clone(), stream.match_value.clone());
+            if let Some(target) = observed_targets.get(&identity) {
                 if next_assignments.sink_for(&stream.match_prop, &stream.match_value)
-                    != Some(target)
+                    != Some(target.as_str())
                 {
                     next_assignments.set(&stream.match_prop, &stream.match_value, target);
-                    assignments_changed = true;
-                    adopted_indices.push(stream.index);
+                    adopted_identities.insert(identity);
+                }
+            } else if stream.assigned_sink.is_none()
+                && !was_known
+                && next_assignments
+                    .sink_for(&stream.match_prop, &stream.match_value)
+                    .is_none()
+            {
+                // A canonical app can reveal helper identities only after it
+                // starts playing. Inherit a route only when every already
+                // assigned member agrees; mixed groups require an explicit
+                // user choice and are never guessed.
+                if let Some(target) = stream.desktop_id.as_deref().and_then(|desktop_id| {
+                    single_canonical_assignment(&mixer.seen, &next_assignments, desktop_id)
+                }) {
+                    next_assignments.set(&stream.match_prop, &stream.match_value, &target);
                 }
             }
         }
+        let adopted_indices = streams
+            .iter()
+            .filter(|stream| {
+                adopted_identities
+                    .contains(&(stream.match_prop.clone(), stream.match_value.clone()))
+            })
+            .map(|stream| stream.index)
+            .collect::<Vec<_>>();
+        let assignments_changed = next_assignments.assignments != previous_assignments.assignments;
         // A pure last_seen bump never reports a structural change, so without
         // this the freshest timestamps only reach disk on a clean tray-quit -
         // and an unclean exit would leave a daily-used app looking stale
@@ -187,7 +334,7 @@ pub(crate) fn poll_app_streams_locked(state: &AppState) -> Result<Vec<AppStream>
     if let Some((previous, next, adopted_indices)) = assignment_change {
         let persist_result = {
             let mixer = state.lock_mixer()?;
-            crate::commands::apps::persist_assignments(&mixer, &previous, &next)
+            crate::commands::apps::persist_assignments(state, &mixer, &previous, &next)
         };
         if let Err(error) = persist_result {
             // Let the next poll retry planned routing instead of retaining a
@@ -311,6 +458,108 @@ mod tests {
     }
 
     #[test]
+    fn canonical_assignment_is_inherited_only_when_existing_members_agree() {
+        let mut seen = crate::persistence::seen::SeenApps::default();
+        let mut assignments = crate::persistence::assignments::Assignments::default();
+        seen.upsert(
+            "application.name",
+            "helper-a",
+            "Game",
+            None,
+            Some("game"),
+            1,
+        );
+        seen.upsert(
+            "application.name",
+            "helper-b",
+            "Game",
+            None,
+            Some("game"),
+            1,
+        );
+        assignments.set("application.name", "helper-a", "sink_game");
+        assignments.set("application.name", "helper-b", "sink_game");
+        assert_eq!(
+            single_canonical_assignment(&seen, &assignments, "game").as_deref(),
+            Some("sink_game")
+        );
+
+        assignments.set("application.name", "helper-b", "sink_media");
+        assert_eq!(
+            single_canonical_assignment(&seen, &assignments, "game"),
+            None
+        );
+    }
+
+    #[test]
+    fn canonical_ignore_is_inherited_only_when_existing_members_are_all_ignored() {
+        let mut seen = crate::persistence::seen::SeenApps::default();
+        seen.upsert(
+            "application.name",
+            "helper-a",
+            "Game",
+            None,
+            Some("game"),
+            1,
+        );
+        seen.set_ignored("application.name", "helper-a", true);
+        assert!(canonical_group_is_ignored(&seen, "game"));
+
+        seen.upsert(
+            "application.name",
+            "helper-b",
+            "Game",
+            None,
+            Some("game"),
+            1,
+        );
+        assert!(!canonical_group_is_ignored(&seen, "game"));
+    }
+
+    fn routed_stream(index: u32, identity: &str, sink: &str) -> AppStream {
+        AppStream {
+            index,
+            app_name: "Shared identity".into(),
+            match_prop: "application.name".into(),
+            match_value: identity.into(),
+            alias: None,
+            icon_name: None,
+            icon_path: None,
+            desktop_id: None,
+            pid: None,
+            assigned_sink: Some(sink.into()),
+            volume_percent: 100,
+            muted: false,
+            active: true,
+        }
+    }
+
+    #[test]
+    fn exact_identity_route_is_adopted_only_when_all_live_streams_agree() {
+        let agreed = vec![
+            routed_stream(1, "browser", "sink_game"),
+            routed_stream(2, "browser", "sink_game"),
+        ];
+        assert_eq!(
+            unambiguous_managed_targets(&agreed)
+                .get(&("application.name".into(), "browser".into()))
+                .map(String::as_str),
+            Some("sink_game")
+        );
+
+        let conflicting = vec![
+            routed_stream(2, "browser", "sink_media"),
+            routed_stream(1, "browser", "sink_game"),
+        ];
+        assert!(!unambiguous_managed_targets(&conflicting)
+            .contains_key(&("application.name".into(), "browser".into())));
+
+        let reversed = [conflicting[1].clone(), conflicting[0].clone()];
+        assert!(!unambiguous_managed_targets(&reversed)
+            .contains_key(&("application.name".into(), "browser".into())));
+    }
+
+    #[test]
     fn locked_poll_enforces_changed_profile_assignment_and_snapshot_fields_agree() {
         let identity_prop = "application.name";
         let identity_value = "sonux-snapshot-route-test";
@@ -323,6 +572,7 @@ mod tests {
                 alias: None,
                 icon_name: None,
                 icon_path: None,
+                desktop_id: None,
                 pid: None,
                 assigned_sink: None,
                 volume_percent: 100,
@@ -340,6 +590,7 @@ mod tests {
                 identity_prop,
                 identity_value,
                 "Sonux Snapshot Route Test",
+                None,
                 None,
                 now,
             );
@@ -622,6 +873,14 @@ pub fn init_virtual_devices(
         }
     }
     // Profiles/active state may have changed since the tray was built.
+    let (assignments, seen) = {
+        let mixer = state.lock_mixer()?;
+        (mixer.assignments.clone(), mixer.seen.clone())
+    };
+    if let Err(error) = state.publish_app_routes(Some(&assignments), Some(&seen)) {
+        state.lock_mixer()?.initialized = false;
+        return Err(format!("publish pre-link app routes: {error}"));
+    }
     crate::refresh_tray(&app);
     Ok(())
 }

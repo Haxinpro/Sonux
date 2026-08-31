@@ -4,15 +4,19 @@ import { UNASSIGNED } from "../../types";
 import { channelIcon, Ms } from "../Icons";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
+import { useI18n } from "../../i18n";
 
 interface ChannelSelectProps {
   /** Currently assigned sink name, or null when unassigned. */
   value: string | null;
+  /** Multiple raw identities in one app group currently use different routes. */
+  mixed?: boolean;
   onChange: (sinkName: string) => void;
 }
 
 /** Dropdown to route an app stream onto a channel. */
-export function ChannelSelect({ value, onChange }: Readonly<ChannelSelectProps>) {
+export function ChannelSelect({ value, mixed = false, onChange }: Readonly<ChannelSelectProps>) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const channels = useMixerStore((s) => s.channels);
 
@@ -23,14 +27,16 @@ export function ChannelSelect({ value, onChange }: Readonly<ChannelSelectProps>)
   const missing = value !== null && !current;
 
   let icon: string;
-  if (current) icon = channelIcon(current);
+  if (mixed) icon = "call_split";
+  else if (current) icon = channelIcon(current);
   else if (missing) icon = "link_off";
   else icon = "block";
 
   let label: string;
-  if (current) label = current.label;
-  else if (missing) label = "Missing";
-  else label = "Unrouted";
+  if (mixed) label = t("mixer.output.mixed");
+  else if (current) label = current.label;
+  else if (missing) label = t("applications.missing");
+  else label = t("applications.unrouted");
 
   return (
     <div style={{ position: "relative" }}>
@@ -40,7 +46,7 @@ export function ChannelSelect({ value, onChange }: Readonly<ChannelSelectProps>)
         onClick={() => setOpen((o) => !o)}
         title={
           missing
-            ? `Assigned to "${value}", which no profile in use has. Audio plays on the default output until that channel exists again.`
+            ? t("applications.missingHint", { channel: value })
             : undefined
         }
       >
@@ -65,14 +71,14 @@ export function ChannelSelect({ value, onChange }: Readonly<ChannelSelectProps>)
         ))}
         <MenuItem
           icon="block"
-          selected={value === null}
+          selected={!mixed && value === null}
           showCheck
           onClick={() => {
             onChange(UNASSIGNED);
             setOpen(false);
           }}
         >
-          Unrouted
+          {t("applications.unrouted")}
         </MenuItem>
       </Popover>
     </div>

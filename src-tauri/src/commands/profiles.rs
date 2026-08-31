@@ -248,6 +248,16 @@ fn persistence_failure(
         target.buses,
     );
     rollback_errors.extend(previous.restore(previous_active));
+    match state.lock_mixer().map(|mixer| mixer.seen.clone()) {
+        Ok(seen) => {
+            if let Err(route_error) =
+                state.publish_app_routes(Some(&previous.assignments), Some(&seen))
+            {
+                rollback_errors.push(format!("restore live pre-link routes: {route_error}"));
+            }
+        }
+        Err(error) => rollback_errors.push(format!("restore live pre-link routes: {error}")),
+    }
     if rollback_errors.is_empty() {
         error
     } else {
@@ -816,6 +826,17 @@ fn apply_profile_locked(
     if let Err(error) = target_live.save() {
         return Err(persistence_failure(
             error,
+            &previous_live,
+            previous_active.as_deref(),
+            state,
+            &prefs,
+            &rollback_target,
+        ));
+    }
+    let seen = state.lock_mixer()?.seen.clone();
+    if let Err(error) = state.publish_app_routes(Some(&target_live.assignments), Some(&seen)) {
+        return Err(persistence_failure(
+            format!("publish target pre-link app routes: {error}"),
             &previous_live,
             previous_active.as_deref(),
             state,

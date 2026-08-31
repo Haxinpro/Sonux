@@ -2,6 +2,63 @@
 
 This file summarizes user-visible changes in each Sonux release.
 
+## [1.2.0] - 31/08/2026
+
+Sonux 1.2.0 improves first-run guidance, application identity, localization,
+and audio startup behavior.
+
+### Interface and onboarding
+
+- Redesigned and polished the mixer, application, profile, processing, and
+  settings interfaces with more consistent spacing, controls, explanations,
+  focus behavior, and responsive layouts.
+- Replaced the abstract onboarding diagram with a five-step first-run tour
+  containing faithful miniature previews of the mixer, app routing, profiles,
+  and microphone processing.
+- Added a final onboarding choice between the ready-made Game, Chat, Media,
+  and Aux board and a minimal custom starting board. The tour can be replayed
+  from Settings without changing the current setup.
+- Improved startup synchronization so transient frontend/backend timing does
+  not leave the interface permanently disconnected after Sonux is available.
+
+### Applications and languages
+
+- Resolved related PipeWire streams to a canonical desktop application.
+  Routing, hiding, drag-and-drop, and inactive-history operations now act on
+  the complete group while preserving strict backend validation.
+- Improved desktop-file and Steam identity resolution, including helpers that
+  share launchers or reveal additional stream identities later.
+- Added optional JSON language packs under
+  `$XDG_CONFIG_HOME/sonux/locales`, with system-language selection, safe
+  validation, CLDR plural forms, right-to-left support, English fallback, and
+  an included custom-pack template.
+
+### Audio routing and reliability
+
+- Added an acknowledged WirePlumber 0.5 pre-link policy. Remembered streams
+  now select their Sonux channel before their first playback link instead of
+  briefly reaching the physical output at full stream volume.
+- Confirmed the fix live with Brave returning after its PipeWire stream had
+  disappeared: playback began at the configured Media volume without the
+  previous onset spike.
+- Preserved a safe fallback when Sonux channels are unavailable, excluded
+  ignored applications from pre-link routing, and kept assignment, profile,
+  channel-removal, and factory-reset metadata transactions coherent.
+- Smoothed native processing after idle boundaries by discarding only stale
+  buffered samples, resetting DSP state, and applying a short stereo-aligned
+  resume fade.
+- Fixed application restart so the old graph and route metadata are torn down
+  before the replacement initializes.
+
+### Upgrade notes
+
+- The WirePlumber hook is installed automatically on first launch. Until the
+  next login or WirePlumber service restart, Sonux safely uses its existing
+  live-router fallback. No manual routing-file edits are required.
+- Existing settings, assignments, profiles, and backups remain compatible.
+- PipeWire with PulseAudio compatibility and WirePlumber 0.5 or newer remain
+  required.
+
 ## [1.1.1] - 29/08/2026
 
 Sonux 1.1.1 is a maintenance update with no intended audio or interface
@@ -68,5 +125,6 @@ strengthening the native PipeWire audio path introduced in earlier releases.
   and package formats listed in the README are intended targets, not verified
   compatibility.
 
+[1.2.0]: https://github.com/Haxinpro/Sonux/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Haxinpro/Sonux/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Haxinpro/Sonux/compare/v1.0.1...v1.1.0

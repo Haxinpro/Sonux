@@ -7,6 +7,7 @@ import {
   MAX_EQ_BANDS,
 } from "../../types";
 import { curvePoints, freqToX, xToFreq } from "../../lib/eqMath";
+import { useI18n, type TranslationKey } from "../../i18n";
 
 // SVG coordinate space; the element scales responsively. All labels live
 // in gutters OUTSIDE the plot rectangle: regions above, dB left, Hz below.
@@ -29,13 +30,13 @@ const fxToX = (fx: number) => LEFT + fx * (W - LEFT - RIGHT);
 const xToFx = (x: number) => (x - LEFT) / (W - LEFT - RIGHT);
 
 /** Frequency regions across the top of the plot. */
-const REGIONS: { label: string; to: number }[] = [
-  { label: "SUB BASS", to: 60 },
-  { label: "BASS", to: 250 },
-  { label: "LOW MIDS", to: 500 },
-  { label: "MID RANGE", to: 2000 },
-  { label: "UPPER MIDS", to: 6000 },
-  { label: "HIGHS", to: 20000 },
+const REGIONS: { label: TranslationKey; to: number }[] = [
+  { label: "equalizer.region.subBass", to: 60 },
+  { label: "equalizer.region.bass", to: 250 },
+  { label: "equalizer.region.lowMids", to: 500 },
+  { label: "equalizer.region.midRange", to: 2000 },
+  { label: "equalizer.region.upperMids", to: 6000 },
+  { label: "equalizer.region.highs", to: 20000 },
 ];
 
 /** Frequencies that get a labeled vertical grid line. */
@@ -47,12 +48,12 @@ const GRID_DBS_MINOR = [-18, -6, 6, 18];
 const fmtFreq = (hz: number) => (hz >= 1000 ? `${hz / 1000}kHz` : `${hz}Hz`);
 const fmtDb = (db: number) => `${db > 0 ? "+" : ""}${db} dB`;
 
-const BAND_KIND_LABELS: Record<EqBand["kind"], string> = {
-  peaking: "Peaking EQ",
-  low_shelf: "Low shelf",
-  high_shelf: "High shelf",
-  low_pass: "Low pass",
-  high_pass: "High pass",
+const BAND_KIND_LABELS: Record<EqBand["kind"], TranslationKey> = {
+  peaking: "equalizer.peakingEq",
+  low_shelf: "equalizer.lowShelf",
+  high_shelf: "equalizer.highShelf",
+  low_pass: "equalizer.lowPass",
+  high_pass: "equalizer.highPass",
 };
 
 function PointValueInput({
@@ -151,6 +152,7 @@ export function EqCurve({
   onAddBand,
   onRemoveBand,
 }: Readonly<EqCurveProps>) {
+  const { t } = useI18n();
   const svgRef = useRef<SVGSVGElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const dragIndex = useRef<number>(-1);
@@ -245,7 +247,7 @@ export function EqCurve({
         className={"eqm-curve" + (config.enabled ? "" : " off")}
         viewBox={`0 0 ${W} ${H}`}
         role="img"
-        aria-label="EQ frequency response"
+        aria-label={t("equalizer.curveLabel")}
         onPointerDown={() => setInspected(null)}
         onDoubleClick={(event) => {
           const svg = svgRef.current;
@@ -276,7 +278,7 @@ export function EqCurve({
         <g key={label}>
           <rect className="eqm-region" x={x0 + 1} y={2} width={x1 - x0 - 2} height={HEAD - 4} rx={3} />
           <text className="eqm-region-label" x={(x0 + x1) / 2} y={2 + (HEAD - 4) / 2 + 1}>
-            {label}
+            {t(label)}
           </text>
         </g>
       ))}
@@ -381,7 +383,7 @@ export function EqCurve({
                 onBandChange(i, { q: Math.round(q * 100) / 100 });
               }}
             >
-              <title>{`${Math.round(band.freq_hz)} Hz, ${band.gain_db.toFixed(1)} dB - drag to move, scroll for width, right-click for options`}</title>
+              <title>{t("equalizer.pointHint", { frequency: Math.round(band.freq_hz), gain: band.gain_db.toFixed(1) })}</title>
             </circle>
             <circle
               className={"eqm-dot" + (i === selected ? " sel" : "")}
@@ -398,7 +400,7 @@ export function EqCurve({
         const band = config.bands[inspected];
         const cx = fxToX(freqToX(band.freq_hz));
         const cy = gainless(band) ? zeroY : dbToY(band.gain_db);
-        const widthLabel = band.kind === "low_shelf" || band.kind === "high_shelf" ? "Slope" : "Q";
+        const widthLabel = t(band.kind === "low_shelf" || band.kind === "high_shelf" ? "equalizer.slope" : "equalizer.q");
         return (
           <div
             className={"eqm-point-info" + (cy < TOP + 70 ? " below" : "")}
@@ -410,8 +412,8 @@ export function EqCurve({
           >
             <div className="eqm-point-info-head">
               <span className="eqm-point-info-chip" style={{ background: bandColor(inspected) }} />
-              <span>{config.enabled ? "EQ enabled" : "EQ disabled"}</span>
-              <span className="eqm-point-info-kind">{BAND_KIND_LABELS[band.kind]}</span>
+              <span>{t(config.enabled ? "equalizer.enabled" : "equalizer.disabled")}</span>
+              <span className="eqm-point-info-kind">{t(BAND_KIND_LABELS[band.kind])}</span>
             </div>
             <div className="eqm-point-info-values">
               <div>
@@ -421,10 +423,10 @@ export function EqCurve({
                   step={0.1}
                   value={gainless(band) ? "" : band.gain_db.toFixed(1)}
                   disabled={gainless(band)}
-                  label={`Band ${inspected + 1} gain in decibels`}
+                  label={t("equalizer.gainLabel", { number: inspected + 1 })}
                   onCommit={(gain_db) => onBandChange(inspected, { gain_db })}
                 />
-                <span>Gain</span>
+                <span>{t("equalizer.gain")}</span>
               </div>
               <div>
                 <PointValueInput
@@ -432,10 +434,10 @@ export function EqCurve({
                   max={EQ_FREQ_MAX_HZ}
                   step={1}
                   value={String(Math.round(band.freq_hz))}
-                  label={`Band ${inspected + 1} frequency in hertz`}
+                  label={t("equalizer.frequencyLabel", { number: inspected + 1 })}
                   onCommit={(freq_hz) => onBandChange(inspected, { freq_hz })}
                 />
-                <span>Frequency</span>
+                <span>{t("equalizer.frequency")}</span>
               </div>
               <div>
                 <PointValueInput
@@ -443,7 +445,7 @@ export function EqCurve({
                   max={10}
                   step={0.01}
                   value={band.q.toFixed(2)}
-                  label={`Band ${inspected + 1} ${widthLabel}`}
+                  label={t("equalizer.widthLabel", { number: inspected + 1, width: widthLabel })}
                   onCommit={(q) => onBandChange(inspected, { q })}
                 />
                 <span>{widthLabel}</span>
@@ -458,7 +460,7 @@ export function EqCurve({
           className="eqm-curve-context"
           style={{ left: contextMenu.left, top: contextMenu.top }}
           role="menu"
-          aria-label={`Band ${contextMenu.index + 1} options`}
+          aria-label={t("equalizer.bandOptions", { number: contextMenu.index + 1 })}
         >
           <button
             type="button"
@@ -468,7 +470,7 @@ export function EqCurve({
               setContextMenu(null);
             }}
           >
-            Reset band
+            {t("equalizer.resetBand")}
           </button>
           <button
             type="button"
@@ -480,7 +482,7 @@ export function EqCurve({
               setContextMenu(null);
             }}
           >
-            Delete band
+            {t("equalizer.deleteBand")}
           </button>
         </div>
       )}

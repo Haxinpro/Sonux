@@ -3,6 +3,7 @@ import { useMixerStore } from "../../store/mixer";
 import { MenuItem } from "../MenuItem";
 import { Ms } from "../Icons";
 import { Popover } from "../Popover";
+import { useI18n } from "../../i18n";
 
 function inputIcon(description: string): string {
   const value = description.toLowerCase();
@@ -18,11 +19,12 @@ export function InputSelect({
   value: string | null;
   onChange: (inputName: string | null) => void;
 }>) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const inputDevices = useMixerStore((state) => state.inputDevices);
   const current = value === null ? null : inputDevices.find((device) => device.name === value);
-  const label = value === null ? "System default" : current?.description ?? value;
-  const shortLabel = value === null ? "Default" : label.split(" ")[0];
+  const label = value === null ? t("common.systemDefault") : current?.description ?? value;
+  const shortLabel = value === null ? t("mixer.output.default") : label.split(" ")[0];
 
   return (
     <div className="strip-input-select" style={{ position: "relative" }}>
@@ -30,7 +32,7 @@ export function InputSelect({
         type="button"
         className="strip-route strip-route-btn"
         onClick={() => setOpen((shown) => !shown)}
-        title={`Microphone input: ${label}`}
+        title={t("mixer.input.label", { input: label })}
       >
         <Ms name={current ? inputIcon(current.description) : "mic"} />
         <span className="strip-route-name">{shortLabel}</span>
@@ -46,7 +48,7 @@ export function InputSelect({
             setOpen(false);
           }}
         >
-          System default
+          {t("common.systemDefault")}
         </MenuItem>
         {inputDevices.map((device) => (
           <MenuItem

@@ -267,6 +267,10 @@ pub struct AppStream {
     /// Resolved absolute icon file path (desktop-entry based), ready for
     /// the asset protocol. Filled in by the command layer.
     pub icon_path: Option<String>,
+    /// Canonical desktop-file id. Raw match fields remain authoritative for
+    /// routing; this id groups helper processes belonging to one application.
+    #[serde(default)]
+    pub desktop_id: Option<String>,
     /// Producing process id - unlocks /proc-based desktop-entry lookup
     /// (cgroup scope, flatpak info, exe path) for icon resolution.
     #[serde(default)]

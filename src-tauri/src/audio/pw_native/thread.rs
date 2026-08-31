@@ -138,6 +138,12 @@ pub enum Cmd {
         sink_name: String,
         reply: Reply<()>,
     },
+    /// Replace the complete versioned routing map consumed by Sonux's
+    /// WirePlumber pre-link hook. None withholds routing while sinks are down.
+    SetAppRouteMetadata {
+        value: Option<String>,
+        reply: Reply<()>,
+    },
     /// Route a channel's monitor to an output device (None = follow default).
     SetChannelOutput {
         sink_name: String,
@@ -255,6 +261,18 @@ struct State {
     links: HashMap<u32, (u32, u32)>,
     metadata: Option<Metadata>,
     _metadata_listener: Option<MetadataListener>,
+    /// Last routing payload requested by the command layer. Retained across a
+    /// WirePlumber restart so a rebound default metadata object is republished.
+    app_route_metadata: Option<String>,
+    /// Last route token explicitly acknowledged by Sonux's WirePlumber hook.
+    /// A server-side metadata write alone is not a cross-client barrier.
+    acknowledged_app_route: Option<String>,
+    /// True only when the running WirePlumber process has advertised that it
+    /// loaded Sonux's hook. First-launch upgrades retain the live fallback.
+    app_route_policy_ready: bool,
+    /// Callers waiting until WirePlumber has observed a route update. Multiple
+    /// identical publications share one metadata write and acknowledgement.
+    pending_app_route_acks: Vec<(String, Vec<Reply<()>>)>,
     default_sink_name: Option<String>,
     default_source_name: Option<String>,
     /// Virtual sinks we created: name -> created-object proxy (kept alive;
@@ -661,6 +679,11 @@ fn on_global(
             let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
                 return;
             };
+            {
+                let mut s = state.borrow_mut();
+                s.acknowledged_app_route = None;
+                s.app_route_policy_ready = false;
+            }
             let state_m = state.clone();
             let listener = metadata
                 .add_listener_local()
@@ -675,7 +698,25 @@ fn on_global(
                                 .map(str::to_string)
                         })
                     };
-                    if key == Some("default.audio.sink") {
+                    if key == Some(crate::persistence::wireplumber::ROUTES_READY_METADATA_KEY) {
+                        state_m.borrow_mut().app_route_policy_ready = value == Some("1");
+                    } else if key == Some(crate::persistence::wireplumber::ROUTES_ACK_METADATA_KEY)
+                    {
+                        if let Some(value) = value {
+                            let replies = {
+                                let mut s = state_m.borrow_mut();
+                                s.acknowledged_app_route = Some(value.to_string());
+                                s.pending_app_route_acks
+                                    .iter()
+                                    .position(|(expected, _)| expected == value)
+                                    .map(|index| s.pending_app_route_acks.remove(index).1)
+                                    .unwrap_or_default()
+                            };
+                            for reply in replies {
+                                let _ = reply.send(Ok(()));
+                            }
+                        }
+                    } else if key == Some("default.audio.sink") {
                         let name = parse_name(value);
                         let changed = {
                             let mut s = state_m.borrow_mut();
@@ -706,6 +747,16 @@ fn on_global(
                 })
                 .register();
             let mut s = state.borrow_mut();
+            if s.app_route_metadata.is_some() || !s.pending_app_route_acks.is_empty() {
+                metadata.set_property(
+                    0,
+                    crate::persistence::wireplumber::ROUTES_METADATA_KEY,
+                    s.app_route_metadata
+                        .as_ref()
+                        .map(|_| crate::persistence::wireplumber::ROUTES_METADATA_TYPE),
+                    s.app_route_metadata.as_deref(),
+                );
+            }
             s.metadata = Some(metadata);
             s._metadata_listener = Some(listener);
         }
@@ -1489,6 +1540,9 @@ fn create_node_object(core: &CoreRc, name: &str, label: &str, kind: u8) -> Resul
     if node_needs_monitor_volumes(kind) {
         props.insert("monitor.channel-volumes", "true");
     }
+    if kind == 0 {
+        props.insert("sonux.owner", "sonux");
+    }
     core.create_object::<Node>("adapter", &props)
 }
 
@@ -1524,6 +1578,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                     "node.name" => name.as_str(),
                     "node.description" => label.as_str(),
                     "media.class" => SINK_CLASS,
+                    "sonux.owner" => "sonux",
                     "audio.position" => if is_spatial_channel(&name) {
                         "[ FL FR FC LFE RL RR SL SR ]"
                     } else {
@@ -1601,6 +1656,7 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                         alias: None,
                         icon_name: n.props.get("application.icon-name").cloned(),
                         icon_path: None,
+                        desktop_id: None,
                         pid: n
                             .props
                             .get("application.process.id")
@@ -2457,6 +2513,65 @@ fn handle_cmd(state: &Rc<RefCell<State>>, registry: &RegistryRc, cmd: Cmd) {
                         target.unwrap_or_else(|| "<default>".into()),
                     )));
                 }
+            }
+        }
+        Cmd::SetAppRouteMetadata { value, reply } => {
+            let mut s = state.borrow_mut();
+            let expected = value
+                .clone()
+                .unwrap_or_else(|| crate::persistence::wireplumber::ROUTES_CLEAR_ACK.to_string());
+            if s.app_route_metadata == value
+                && s.acknowledged_app_route.as_deref() == Some(expected.as_str())
+            {
+                let _ = reply.send(Ok(()));
+                return;
+            }
+            if s.app_route_metadata == value {
+                if let Some((_, replies)) = s
+                    .pending_app_route_acks
+                    .iter_mut()
+                    .find(|(token, _)| token == &expected)
+                {
+                    replies.push(reply);
+                    return;
+                }
+            } else {
+                for (_, replies) in s.pending_app_route_acks.drain(..) {
+                    for pending in replies {
+                        let _ = pending.send(Err(SinkError::Config(
+                            "pre-link route publication was superseded".into(),
+                        )));
+                    }
+                }
+                s.app_route_metadata = value;
+                s.acknowledged_app_route = None;
+            }
+
+            if !s.app_route_policy_ready {
+                if let Some(metadata) = s.metadata.as_ref() {
+                    metadata.set_property(
+                        0,
+                        crate::persistence::wireplumber::ROUTES_METADATA_KEY,
+                        s.app_route_metadata
+                            .as_ref()
+                            .map(|_| crate::persistence::wireplumber::ROUTES_METADATA_TYPE),
+                        s.app_route_metadata.as_deref(),
+                    );
+                }
+                let _ = reply.send(Ok(()));
+                return;
+            }
+
+            s.pending_app_route_acks.push((expected, vec![reply]));
+            if let Some(metadata) = s.metadata.as_ref() {
+                metadata.set_property(
+                    0,
+                    crate::persistence::wireplumber::ROUTES_METADATA_KEY,
+                    s.app_route_metadata
+                        .as_ref()
+                        .map(|_| crate::persistence::wireplumber::ROUTES_METADATA_TYPE),
+                    s.app_route_metadata.as_deref(),
+                );
             }
         }
     }

@@ -4,6 +4,7 @@ import { IconButton } from "../IconButton";
 import { Ms } from "../Icons";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
+import { useI18n } from "../../i18n";
 
 /**
  * Profile picker. Profiles are live-bound: every mixer change autosaves
@@ -16,6 +17,7 @@ export function ProfileMenu({
   compact?: boolean;
   onManageProfiles: () => void;
 }>) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   /** Profile whose auto-switch (trigger) panel is expanded. */
   const [triggerFor, setTriggerFor] = useState<string | null>(null);
@@ -38,9 +40,9 @@ export function ProfileMenu({
 
   return (
     <div className={compact ? "strip-preset-anchor" : undefined} style={{ position: "relative" }}>
-      <button type="button" className={compact ? "strip-preset-button" : "select"} onClick={() => setOpen((o) => !o)} title="Profiles">
+      <button type="button" className={compact ? "strip-preset-button" : "select"} onClick={() => setOpen((o) => !o)} title={t("profiles.title")}>
         <Ms name="bookmarks" />
-        <span>{activeProfile ?? "Profiles"}</span>
+        <span>{activeProfile ?? t("profiles.title")}</span>
         <Ms name="expand_more" />
       </button>
       <Popover open={open} onClose={close} side="bottom" align={compact ? "center" : "end"} style={{ minWidth: 240 }}>
@@ -68,7 +70,7 @@ export function ProfileMenu({
                       <span className="profile-row-trigger">
                         <Ms name="bolt" style={{ fontSize: 12 }} />
                         <span className="profile-row-trigger-name">
-                          auto-loads with {trigger}
+                          {t("profiles.menu.autoLoads", { device: trigger })}
                         </span>
                       </span>
                     )}
@@ -79,8 +81,8 @@ export function ProfileMenu({
                     boxed
                     size={15}
                     icon="bolt"
-                    title="Auto-load when a device connects"
-                    label={`Auto-switch settings for ${profile.name}`}
+                    title={t("profiles.menu.autoLoadHint")}
+                    label={t("profiles.menu.autoSwitchSettings", { profile: profile.name })}
                     onClick={() => setTriggerFor((t) => (t === profile.name ? null : profile.name))}
                   />
                   <IconButton
@@ -88,15 +90,15 @@ export function ProfileMenu({
                     danger
                     size={15}
                     icon="delete"
-                    title="Delete profile"
-                    label={`Delete profile ${profile.name}`}
+                    title={t("profiles.delete.action")}
+                    label={t("profiles.menu.deleteLabel", { profile: profile.name })}
                     onClick={() => void deleteProfile(profile.name)}
                   />
                 </div>
               </div>
               {triggerFor === profile.name && (
                 <div className="trigger-panel">
-                  <div className="trigger-hint">Auto-load when this device connects:</div>
+                  <div className="trigger-hint">{t("profiles.menu.triggerHint")}</div>
                   <MenuItem
                     icon="block"
                     selected={profile.trigger_device === null}
@@ -105,7 +107,7 @@ export function ProfileMenu({
                       setTriggerFor(null);
                     }}
                   >
-                    No auto-switch
+                    {t("profiles.menu.noAutoSwitch")}
                   </MenuItem>
                   {outputDevices.map((d) => (
                     <MenuItem
@@ -134,7 +136,7 @@ export function ProfileMenu({
             onManageProfiles();
           }}
         >
-          Manage profiles
+          {t("profiles.menu.manage")}
         </MenuItem>
       </Popover>
     </div>

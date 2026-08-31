@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { useMixerStore } from "../store/mixer";
 import { Ms } from "./Icons";
+import { useI18n, type TranslationKey } from "../i18n";
 
 interface TestStatus {
   recording: boolean;
@@ -13,25 +14,25 @@ interface TestStatus {
 interface Diagnostic {
   id: string;
   icon: string;
-  title: string;
+  title: TranslationKey;
 }
 
 const CHANNEL_DIAGNOSTICS: Record<string, Diagnostic[]> = {
   sink_game: [
-    { id: "game_action", icon: "sports_esports", title: "Play CC0 action soundtrack" },
-    { id: "game_footsteps", icon: "directions_walk", title: "Play CC0 footsteps" },
+    { id: "game_action", icon: "sports_esports", title: "audioTest.action" },
+    { id: "game_footsteps", icon: "directions_walk", title: "audioTest.footsteps" },
   ],
   sink_chat: [
-    { id: "chat_female", icon: "record_voice_over", title: "Play CC0 female voice" },
-    { id: "chat_male", icon: "spatial_audio_off", title: "Play CC0 male voice" },
+    { id: "chat_female", icon: "record_voice_over", title: "audioTest.femaleVoice" },
+    { id: "chat_male", icon: "spatial_audio_off", title: "audioTest.maleVoice" },
   ],
   sink_media: [
-    { id: "media_ambient", icon: "movie", title: "Play CC0 ambient soundtrack" },
-    { id: "media_music", icon: "music_note", title: "Play CC0 music" },
+    { id: "media_ambient", icon: "movie", title: "audioTest.ambient" },
+    { id: "media_music", icon: "music_note", title: "audioTest.music" },
   ],
   sink_aux: [
-    { id: "media_ambient", icon: "movie", title: "Play CC0 ambient soundtrack" },
-    { id: "media_music", icon: "music_note", title: "Play CC0 music" },
+    { id: "media_ambient", icon: "movie", title: "audioTest.ambient" },
+    { id: "media_music", icon: "music_note", title: "audioTest.music" },
   ],
 };
 
@@ -44,6 +45,7 @@ export function AudioTestControls({
   sinkName?: string;
   nodeName?: string;
 }>) {
+  const { t } = useI18n();
   const [status, setStatus] = useState<TestStatus>({
     recording: false,
     playing: false,
@@ -78,7 +80,7 @@ export function AudioTestControls({
           (next.recorded_peak_db ?? -96) < -65
         ) {
           useMixerStore.setState({
-            error: "The channel test captured silence. Start audio on this channel while Record is active.",
+            error: t("audioTest.silenceError"),
           });
         }
       })
@@ -87,14 +89,14 @@ export function AudioTestControls({
   const prefix = kind === "mic" ? "mic" : "channel";
   const diagnostics = kind === "channel"
     ? (CHANNEL_DIAGNOSTICS[sinkName ?? ""] ?? [
-        { id: "media_ambient", icon: "movie", title: "Play CC0 ambient soundtrack" },
-        { id: "media_music", icon: "music_note", title: "Play CC0 music" },
+        { id: "media_ambient", icon: "movie", title: "audioTest.ambient" },
+        { id: "media_music", icon: "music_note", title: "audioTest.music" },
       ])
     : [];
 
   return (
     <div className="audio-test">
-      <div className="audio-test-label">Test</div>
+      <div className="audio-test-label">{t("audioTest.title")}</div>
       <div className="audio-test-buttons">
         {diagnostics.map((diagnostic) => (
           <button
@@ -102,7 +104,7 @@ export function AudioTestControls({
             key={diagnostic.id}
             className="audio-test-button"
             disabled={status.recording}
-            title={diagnostic.title}
+            title={t(diagnostic.title)}
             onClick={() => run("play_channel_test_sample", { sample: diagnostic.id })}
           >
             <Ms name={diagnostic.icon} />
@@ -113,8 +115,8 @@ export function AudioTestControls({
           className={"audio-test-button" + (status.recording ? " recording" : "")}
           disabled={status.playing}
           title={status.recording
-            ? "Stop recording"
-            : `Record up to ${kind === "mic" ? 30 : 12} seconds before processing`}
+            ? t("audioTest.stopRecording")
+            : t("audioTest.record", { seconds: kind === "mic" ? 30 : 12 })}
           onClick={() => run(status.recording
             ? `stop_${prefix}_test_recording`
             : `start_${prefix}_test_recording`)}
@@ -126,10 +128,10 @@ export function AudioTestControls({
           className={"audio-test-button" + (status.playing ? " playing" : "")}
           disabled={(!status.has_recording && !status.playing) || status.recording}
           title={status.playing
-            ? "Stop playback"
+            ? t("audioTest.stopPlayback")
             : kind === "channel" && status.has_recording
-              ? `Play your recording through live processing (peak ${(status.recorded_peak_db ?? -96).toFixed(1)} dBFS)`
-              : "Play your recording through the live processing"}
+              ? t("audioTest.playWithPeak", { peak: (status.recorded_peak_db ?? -96).toFixed(1) })
+              : t("audioTest.play")}
           onClick={() => run(status.playing
             ? `stop_${prefix}_test_playback`
             : `play_${prefix}_test_loop`)}

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { EqConfig } from "../../types";
 import { Ms } from "../Icons";
 import { Popover } from "../Popover";
+import { useI18n } from "../../i18n";
 
 interface EqPresetEntry {
   source: "bundled" | "user";
@@ -80,6 +81,7 @@ interface EqPresetMenuProps {
 /** Preset picker + import/export. Bundled EQ starting points ship inside the
  * binary; user presets are stored in a library scoped to this channel. */
 export function EqPresetMenu({ sinkName, config, onApply, onError, compact = false }: Readonly<EqPresetMenuProps>) {
+  const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const [presets, setPresets] = useState<EqPresetEntry[]>([]);
   const [saveName, setSaveName] = useState("");
@@ -266,8 +268,8 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
             <button
               type="button"
               className="eqm-remove danger"
-              title="Delete this preset"
-              aria-label={`Confirm delete ${entry.preset.name}`}
+              title={t("microphone.presets.deleteHint")}
+              aria-label={t("presets.confirmDelete", { name: entry.preset.name })}
               onClick={() => void deletePreset(entry.preset.name)}
             >
               <Ms name="check" style={{ fontSize: 14 }} />
@@ -275,8 +277,8 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
             <button
               type="button"
               className="eqm-remove"
-              title="Keep it"
-              aria-label="Cancel delete"
+              title={t("microphone.presets.keep")}
+              aria-label={t("presets.cancelDelete")}
               onClick={() => setConfirmDelete(null)}
             >
               <Ms name="close" style={{ fontSize: 13 }} />
@@ -286,8 +288,8 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
           <button
             type="button"
             className="eqm-remove"
-            title="Delete preset"
-            aria-label={`Delete preset ${entry.preset.name}`}
+            title={t("microphone.presets.delete")}
+            aria-label={t("presets.deleteNamed", { name: entry.preset.name })}
             onClick={() => setConfirmDelete(entry.preset.name)}
           >
             <Ms name="close" style={{ fontSize: 13 }} />
@@ -302,11 +304,11 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
         type="button"
         className={compact ? "strip-preset-button" : "select"}
         onClick={() => setMenuOpen((o) => !o)}
-        title={displayedPreset ? `Preset: ${displayedPreset.preset.name}` : undefined}
+        title={displayedPreset ? t("presets.active", { name: displayedPreset.preset.name }) : undefined}
       >
         <Ms name="library_music" style={{ fontSize: 15 }} />
         <span className="eqm-preset-btn-label">
-          {displayedPreset ? displayedPreset.preset.name : compact ? "Custom" : "Channel preset"}
+          {displayedPreset ? displayedPreset.preset.name : t(compact ? "presets.custom" : "presets.channel")}
         </span>
         <Ms name="expand_more" />
       </button>
@@ -323,25 +325,25 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
       >
         {bundled.length > 0 && (
           <>
-            <div className="eqm-preset-head">Bundled EQ presets</div>
+            <div className="eqm-preset-head">{t("presets.bundled")}</div>
             {bundled.map(presetRow)}
           </>
         )}
         {user.length > 0 && (
           <>
-            <div className="eqm-preset-head">This channel</div>
+            <div className="eqm-preset-head">{t("presets.thisChannel")}</div>
             {user.map(presetRow)}
           </>
         )}
 
         <div className="menu-sep" />
         <div className={"eqm-save-label" + (displayedPreset ? "" : " custom")}>
-          {displayedPreset ? "Save a copy of this channel" : "Save EQ and all channel processing"}
+          {t(displayedPreset ? "presets.saveCopy" : "presets.saveCurrent")}
         </div>
         <div className="eqm-save-row">
           <input
             className="menu-input"
-            placeholder="Preset name…"
+            placeholder={t("presets.namePlaceholder")}
             value={saveName}
             maxLength={64}
             onChange={(e) => setSaveName(e.target.value)}
@@ -353,7 +355,7 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
             type="button"
             className="select"
             disabled={!saveName.trim()}
-            title="Save current EQ and processing as a channel preset"
+            title={t("presets.saveHint")}
             onClick={() => void saveCurrent()}
           >
             <Ms name="save" style={{ fontSize: 15 }} />
@@ -366,27 +368,27 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
             type="button"
             className={"select eqm-io-btn" + (importing ? " on" : "")}
             aria-expanded={importing}
-            title="Import a preset (paste JSON / AutoEq, or a file)"
+            title={t("presets.importHint")}
             onClick={() => setImporting((v) => !v)}
           >
             <Ms name="content_paste" style={{ fontSize: 15 }} />
-            <span>Import</span>
+            <span>{t("presets.import")}</span>
           </button>
           <button
             type="button"
             className="select eqm-io-btn"
-            title="Export this channel preset to a JSON file"
+            title={t("presets.exportHint")}
             onClick={() => void exportToFile()}
           >
             <Ms name="download" style={{ fontSize: 15 }} />
-            <span>Export</span>
+            <span>{t("presets.export")}</span>
           </button>
         </div>
         {importing && (
           <div className="eqm-import">
             <textarea
               className="eqm-import-text"
-              placeholder={"Paste preset JSON or an AutoEq block:\nPreamp: -6.0 dB\nFilter 1: ON PK Fc 105 Hz Gain -2.4 dB Q 0.70"}
+              placeholder={t("presets.pastePlaceholder")}
               value={importText}
               autoFocus
               onChange={(e) => setImportText(e.target.value)}
@@ -398,10 +400,10 @@ export function EqPresetMenu({ sinkName, config, onApply, onError, compact = fal
                 disabled={!importText.trim()}
                 onClick={() => void importPasted()}
               >
-                Apply pasted
+                {t("presets.applyPasted")}
               </button>
               <button type="button" className="select" onClick={() => void importFromFile()}>
-                From file…
+                {t("presets.fromFile")}
               </button>
             </div>
           </div>

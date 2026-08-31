@@ -336,6 +336,7 @@ impl AudioBackend for PactlBackend {
                     alias: None,
                     icon_name,
                     icon_path: None,
+                    desktop_id: None,
                     pid: prop(&input.properties, "application.process.id")
                         .and_then(|v| v.parse().ok()),
                     assigned_sink,

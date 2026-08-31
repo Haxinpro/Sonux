@@ -64,6 +64,37 @@ impl Ring {
         }
         avail
     }
+
+    /// Snapshot the producer's next write position. The producer uses this to
+    /// publish an exact lifecycle boundary before it writes resumed audio.
+    pub fn write_position(&self) -> usize {
+        self.write.load(Ordering::Relaxed)
+    }
+
+    /// Consumer-side lifecycle boundary: discard samples only through a
+    /// producer cursor captured before fresh audio was published. If the
+    /// consumer has already passed the boundary, leave its cursor unchanged.
+    pub fn discard_through(&self, boundary: usize) -> usize {
+        let r = self.read.load(Ordering::Relaxed);
+        let discarded = boundary.wrapping_sub(r);
+        if discarded > self.buf.len() {
+            return 0;
+        }
+        self.read.store(boundary, Ordering::Release);
+        discarded
+    }
+
+    /// Consumer-side resume boundary: discard everything published before the
+    /// current write cursor. Samples published concurrently after this load
+    /// remain available on the next pop.
+    #[cfg(test)]
+    pub fn discard_pending(&self) -> usize {
+        let w = self.write.load(Ordering::Acquire);
+        let r = self.read.load(Ordering::Relaxed);
+        let discarded = w.wrapping_sub(r).min(self.buf.len());
+        self.read.store(w, Ordering::Release);
+        discarded
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +145,33 @@ mod tests {
         let mut rest = [0.0; 4];
         assert_eq!(ring.pop(&mut rest), 4);
         assert_eq!(rest, [3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn discard_pending_drops_old_audio_but_keeps_later_writes() {
+        let ring = Ring::new(8);
+        assert_eq!(ring.push(&[1.0, 2.0, 3.0, 4.0]), 4);
+        assert_eq!(ring.discard_pending(), 4);
+        assert_eq!(ring.push(&[5.0, 6.0]), 2);
+
+        let mut out = [0.0; 4];
+        assert_eq!(ring.pop(&mut out), 2);
+        assert_eq!(out, [5.0, 6.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn discard_through_preserves_samples_published_after_boundary() {
+        let ring = Ring::new(8);
+        assert_eq!(ring.push(&[-1.0, -0.5]), 2);
+        let boundary = ring.write_position();
+        assert_eq!(ring.push(&[1.0, 0.5]), 2);
+
+        assert_eq!(ring.discard_through(boundary), 2);
+        let mut out = [0.0; 4];
+        assert_eq!(ring.pop(&mut out), 2);
+        assert_eq!(out, [1.0, 0.5, 0.0, 0.0]);
+
+        // Replaying an old boundary must never move the consumer backwards.
+        assert_eq!(ring.discard_through(boundary), 0);
     }
 }

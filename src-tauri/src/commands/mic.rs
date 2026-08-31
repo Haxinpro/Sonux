@@ -424,6 +424,7 @@ pub(crate) fn snapshot_mic_clients(state: &AppState) -> Result<Vec<MicClient>, S
             binary,
             client.icon_name.as_deref(),
             client.pid,
+            None,
         );
         client.icon_path = resolved.icon_path;
         if let Some(name) = resolved.display_name {

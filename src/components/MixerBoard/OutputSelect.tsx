@@ -5,6 +5,7 @@ import { Ms } from "../Icons";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
 import { Toggle } from "../Toggle";
+import { useI18n } from "../../i18n";
 
 interface OutputSelectProps {
   /** Selected output node name; null = follow system default. */
@@ -45,6 +46,7 @@ export function OutputSelect({
   compact,
   popoverStyle,
 }: Readonly<OutputSelectProps>) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const outputDevices = useMixerStore((s) => s.outputDevices);
 
@@ -56,18 +58,18 @@ export function OutputSelect({
   const shown = current ?? resolvedDevice;
 
   let label: string;
-  if (mixed) label = "Per-channel";
+  if (mixed) label = t("mixer.output.perChannel");
   else if (value !== null) label = current?.description ?? value;
-  else if (resolvedDevice) label = `System default (${resolvedDevice.description})`;
-  else label = "System default";
+  else if (resolvedDevice) label = t("mixer.output.systemResolved", { device: resolvedDevice.description });
+  else label = t("common.systemDefault");
 
   // Compact footer label: a single meaningful word that fits a 122px strip.
   // Following default shows the live device so the user sees where it lands.
   let shortLabel: string;
-  if (mixed) shortLabel = "Mixed";
+  if (mixed) shortLabel = t("mixer.output.mixed");
   else if (value !== null) shortLabel = label.split(" ")[0];
   else if (resolvedDevice) shortLabel = resolvedDevice.description.split(" ")[0];
-  else shortLabel = "Default";
+  else shortLabel = t("mixer.output.default");
 
   const items = (
     <>
@@ -80,7 +82,7 @@ export function OutputSelect({
           setOpen(false);
         }}
       >
-        System default
+        {t("common.systemDefault")}
       </MenuItem>
       {outputDevices.map((d) => (
         <MenuItem
@@ -103,10 +105,10 @@ export function OutputSelect({
               button of its own. */}
           <div
             className="menu-item static"
-            title="Off: this channel plays only on the device above (or the exact system default) and stays silent if it's gone, instead of failing over to another output."
+            title={t("mixer.output.failoverHint")}
           >
             <Ms name="sync_alt" />
-            <span className="menu-item-label">Fail over to another device</span>
+            <span className="menu-item-label">{t("mixer.output.failover")}</span>
             <Toggle on={failover ?? true} onClick={() => onFailoverChange(!(failover ?? true))} />
           </div>
         </>
@@ -121,7 +123,7 @@ export function OutputSelect({
           type="button"
           className="strip-route strip-route-btn"
           onClick={() => setOpen((o) => !o)}
-          title={`Output: ${label}`}
+          title={t("mixer.output.label", { output: label })}
         >
           <Ms name={shown ? deviceIcon(shown.description) : "arrow_forward"} />
           <span className="strip-route-name">{shortLabel}</span>

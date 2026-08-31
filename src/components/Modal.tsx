@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { IconButton } from "./IconButton";
+import { useI18n } from "../i18n";
 
 function focusableElements(dialog: HTMLElement): HTMLElement[] {
   return [...dialog.querySelectorAll<HTMLElement>(
@@ -18,13 +19,14 @@ function focusableElements(dialog: HTMLElement): HTMLElement[] {
   });
 }
 
-/** Centered modal dialog with a dimming scrim. Escape or scrim-click closes. */
+/** Centered modal dialog with focus containment and optional dismissal controls. */
 export function Modal({
   open,
   onClose,
   title,
   children,
   className,
+  dismissible = true,
 }: Readonly<{
   open: boolean;
   onClose: () => void;
@@ -32,7 +34,10 @@ export function Modal({
   children: ReactNode;
   /** Extra class on the dialog (e.g. a width variant). */
   className?: string;
+  /** Whether Escape, the scrim and the close button may dismiss the dialog. */
+  dismissible?: boolean;
 }>) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const onCloseRef = useRef(onClose);
@@ -49,7 +54,7 @@ export function Modal({
     // child target instead of always stealing focus back to the close button.
     if (!dialog?.contains(document.activeElement)) (focusable()[0] ?? dialog)?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && dismissible) {
         e.preventDefault();
         onCloseRef.current();
       } else if (e.key === "Tab" && dialog) {
@@ -75,7 +80,7 @@ export function Modal({
       window.removeEventListener("keydown", onKey);
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, [open]);
+  }, [open, dismissible]);
 
   // Runs after the open/close lifecycle effect on every render. If a focused
   // conditional child disappeared during reconciliation, recover containment.
@@ -89,7 +94,7 @@ export function Modal({
 
   if (!open) return null;
   return createPortal(
-    <div className="modal-scrim" onClick={onClose}>
+    <div className="modal-scrim" onClick={dismissible ? onClose : undefined}>
       <div
         ref={dialogRef}
         className={"modal" + (className ? ` ${className}` : "")}
@@ -101,7 +106,9 @@ export function Modal({
       >
         <div className="modal-head">
           <div className="modal-title" id={titleId}>{title}</div>
-          <IconButton boxed icon="close" title="Close" onClick={onClose} size={18} />
+          {dismissible && (
+            <IconButton boxed icon="close" title={t("common.action.close")} onClick={onClose} size={18} />
+          )}
         </div>
         {children}
       </div>

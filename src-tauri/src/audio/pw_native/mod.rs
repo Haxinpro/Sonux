@@ -189,6 +189,13 @@ impl AudioBackend for PipeWireBackend {
         })
     }
 
+    fn set_app_route_metadata(&self, value: Option<&str>) -> Result<(), SinkError> {
+        self.request(|reply| Cmd::SetAppRouteMetadata {
+            value: value.map(str::to_string),
+            reply,
+        })
+    }
+
     fn set_app_volume(&self, stream_index: u32, volume_percent: u8) -> Result<(), SinkError> {
         self.request(|reply| Cmd::SetNodeVolumeById {
             id: stream_index,

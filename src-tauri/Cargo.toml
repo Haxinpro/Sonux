@@ -1,7 +1,7 @@
 [package]
 name = "sonux"
 default-run = "sonux"
-version = "1.1.1"
+version = "1.2.0"
 description = "Linux-native audio routing and mixing for PipeWire"
 edition = "2021"
 rust-version = "1.88"
@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 dirs = "6"
+libc = "0.2"
 # 0.8.0 on crates.io predates PipeWire 1.6 headers (libspa bindgen breaks);
 # git main carries the header fixes. v0_3_49 gates Buffer::requested().
 pipewire = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs", rev = "v0.10.0", features = ["v0_3_49"] }

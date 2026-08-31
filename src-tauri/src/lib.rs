@@ -1,6 +1,7 @@
 mod audio;
 mod commands;
 mod error;
+mod language_packs;
 mod mixer;
 mod persistence;
 mod profile_automation;
@@ -117,8 +118,11 @@ pub fn run() {
             commands::devices::set_channel_output,
             commands::apps::get_seen_apps,
             commands::apps::set_app_ignored,
+            commands::apps::set_app_group_ignored,
             commands::apps::forget_app,
+            commands::apps::forget_app_group,
             commands::apps::set_app_assignment,
+            commands::apps::set_app_group_assignment,
             commands::channels::add_channel,
             commands::channels::rename_channel,
             commands::channels::reorder_channels,
@@ -133,6 +137,7 @@ pub fn run() {
             commands::buses::set_bus_volume,
             commands::buses::set_bus_mute,
             commands::routing::route_app_to_channel,
+            commands::routing::route_app_group_to_channel,
             commands::routing::set_channel_volume,
             commands::routing::toggle_channel_mute,
             commands::routing::set_app_volume,
@@ -185,6 +190,8 @@ pub fn run() {
             profile_automation::get_profile_automation_status,
             profile_automation::list_running_applications,
             commands::settings::get_backend_info,
+            commands::settings::get_language_pack_catalog,
+            commands::settings::open_language_pack_location,
             commands::settings::get_autostart,
             commands::settings::get_backup_status,
             commands::settings::create_backup,

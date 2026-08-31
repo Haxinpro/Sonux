@@ -4,10 +4,11 @@ import { useMixerStore } from "../../store/mixer";
 import { MASTER_BUS } from "../../types";
 import { Ms, ICON_CHOICES } from "../Icons";
 import { Modal } from "../Modal";
-import { ProcessingInfo } from "../ProcessingInfo";
 import { ChannelStrip } from "./ChannelStrip";
 import { MicStrip } from "./MicStrip";
 import { BusStrip } from "./StreamMixStrip";
+import { useI18n } from "../../i18n";
+import { applicationGroupKey } from "../../lib/appGroups";
 
 // UI-side gates only; the backend enforces the real limits.
 const MAX_CHANNELS = 10;
@@ -20,7 +21,6 @@ function MixGroup({
   label,
   count,
   hint,
-  info,
   onAdd,
   addTitle,
   children,
@@ -30,8 +30,6 @@ function MixGroup({
   count: string;
   /** Hover explanation of what this group does. */
   hint: string;
-  /** Optional keyboard-reachable detailed explanation. */
-  info?: { label: string; text: string };
   onAdd?: () => void;
   addTitle?: string;
   children: ReactNode;
@@ -42,16 +40,11 @@ function MixGroup({
         <Ms name={icon} className="gh-icon" />
         <span className="gh-label">{label}</span>
         <span className="gh-count">{count}</span>
-        {(info || onAdd) && (
-          <div className="group-head-actions">
-            {info && <ProcessingInfo label={info.label} text={info.text} />}
-            {onAdd && (
-              <div className="gh-add-wrap">
-                <button type="button" className="gh-add" onClick={onAdd} title={addTitle}>
-                  <Ms name="add" />
-                </button>
-              </div>
-            )}
+        {onAdd && (
+          <div className="gh-add-wrap">
+            <button type="button" className="gh-add" onClick={onAdd} title={addTitle}>
+              <Ms name="add" />
+            </button>
           </div>
         )}
       </div>
@@ -69,6 +62,7 @@ export function MixerBoard({
   onOpenProfiles: () => void;
   onOpenMic: () => void;
 }>) {
+  const { t } = useI18n();
   const channels = useMixerStore((s) => s.channels);
   const buses = useMixerStore((s) => s.buses);
   const appStreams = useMixerStore((s) => s.appStreams);
@@ -99,7 +93,7 @@ export function MixerBoard({
     return (
       <div className="content">
         <div className="empty-hint" style={{ margin: "auto" }}>
-          Creating virtual channels…
+          {t("mixer.loading")}
         </div>
       </div>
     );
@@ -110,7 +104,7 @@ export function MixerBoard({
   // available in the channel membership popover and Applications screen.
   const identitiesByChannel = new Map<string, Set<string>>();
   for (const stream of appStreams) {
-    const key = `${stream.match_prop}\0${stream.match_value}`;
+    const key = applicationGroupKey(stream);
     if (stream.assigned_sink) {
       const identities = identitiesByChannel.get(stream.assigned_sink) ?? new Set<string>();
       identities.add(key);
@@ -146,19 +140,16 @@ export function MixerBoard({
     <div className="content">
       <div className="screen-scroll" style={{ padding: 0 }}>
         <div className="mix-scroll">
+          <div className="mix-canvas">
           {backendNative !== false && masterBus && (
             <>
               <MixGroup
                 icon="instant_mix"
-                label="Master"
+                label={t("mixer.group.master")}
                 count="1"
-                hint="The master profile and a capturable mix containing every playback channel."
-                info={{
-                  label: "Master recording mix",
-                  text: "Master combines every routed playback channel for OBS and other recorders. Its fader and mute change the captured mix, not your normal speaker or headphone volume. Use the headphones button to monitor it. Apps shown below are waiting to be routed and are not controlled by this fader.",
-                }}
+                hint={t("mixer.group.masterHint")}
                 onAdd={extraBuses.length < MAX_BUSES ? () => setAddingMix(true) : undefined}
-                addTitle="Add a mix (capturable source for OBS/recorders)"
+                addTitle={t("mixer.group.addMix")}
               >
                 <BusStrip bus={masterBus} onManageProfiles={onOpenProfiles} />
               </MixGroup>
@@ -168,11 +159,11 @@ export function MixerBoard({
 
           <MixGroup
             icon="apps"
-            label="Channels"
+            label={t("mixer.group.channels")}
             count={`${channels.length}`}
-            hint="Playback: apps route into channels; each has its own volume, mute and output device."
+            hint={t("mixer.group.channelsHint")}
             onAdd={channels.length < MAX_CHANNELS ? () => setAddingChannel(true) : undefined}
-            addTitle="Add a channel"
+            addTitle={t("mixer.group.addChannel")}
           >
             {channels.map((channel) => (
               <ChannelStrip
@@ -205,17 +196,17 @@ export function MixerBoard({
               <div className="group-div" />
               <MixGroup
                 icon="mic"
-                label="Mic"
-                count={multipleMics ? `${micConfigs.filter((mic) => mic.enabled).length}/${micConfigs.length}` : (micConfig.enabled ? "1" : "Off")}
+                label={t("mixer.group.microphone")}
+                count={multipleMics ? `${micConfigs.filter((mic) => mic.enabled).length}/${micConfigs.length}` : (micConfig.enabled ? "1" : t("settings.meters.off.label"))}
                 hint={micConfig.enabled
-                  ? "Your processed microphone. Apps capture the result as the Sonux microphone."
-                  : "The processed microphone is disabled for this profile. Open it to configure or enable it."}
+                  ? t("mixer.group.microphoneHint")
+                  : t("mixer.group.microphoneDisabledHint")}
                 onAdd={multipleMics ? () => {
                   selectMic("sink_mic");
                   setMicCreationOpen(true);
                   onOpenMic();
                 } : undefined}
-                addTitle="Add microphone channel"
+                addTitle={t("microphone.addChannel")}
               >
                 {(multipleMics ? micConfigs : [micConfig]).map((mic) => (
                   <MicStrip
@@ -254,9 +245,9 @@ export function MixerBoard({
           <div className="group-div" />
           <MixGroup
             icon="podcasts"
-            label="Mixes"
+            label={t("mixer.group.mixes")}
             count={`${extraBuses.length}`}
-            hint="Recordable copies of your channels. In OBS, add a mix as an audio input (mic/aux) - not Desktop Audio."
+            hint={t("mixer.group.mixesHint")}
           >
             {extraBuses.map((bus) => (
               <BusStrip key={bus.name} bus={bus} onManageProfiles={onOpenProfiles} />
@@ -264,13 +255,14 @@ export function MixerBoard({
           </MixGroup>
           </>
           )}
+          </div>
         </div>
       </div>
 
-      <Modal open={addingChannel} onClose={closeChannelModal} title="New channel">
+      <Modal open={addingChannel} onClose={closeChannelModal} title={t("mixer.channel.create.title")}>
         <input
           className="menu-input"
-          placeholder="Channel name…"
+          placeholder={t("mixer.channel.create.placeholder")}
           value={channelLabel}
           autoFocus
           maxLength={24}
@@ -279,7 +271,7 @@ export function MixerBoard({
             if (e.key === "Enter") createChannel();
           }}
         />
-        <div className="modal-label">Icon</div>
+        <div className="modal-label">{t("mixer.channel.create.icon")}</div>
         <div className="icon-grid">
           {ICON_CHOICES.map((choice) => (
             <button
@@ -293,15 +285,15 @@ export function MixerBoard({
             </button>
           ))}
         </div>
-        <div className="modal-label">Audio format</div>
+        <div className="modal-label">{t("mixer.channel.create.format")}</div>
         <div className="channel-format-choices">
           <button
             type="button"
             className={"channel-format-choice" + (!channelSpatial ? " selected" : "")}
             onClick={() => setChannelSpatial(false)}
           >
-            <Ms name="stereo" />
-            <span><strong>Stereo</strong><small>Recommended for voice, music and general applications</small></span>
+            <Ms name="speaker_group" />
+            <span><strong>{t("mixer.channel.create.stereo")}</strong><small>{t("mixer.channel.create.stereoHint")}</small></span>
           </button>
           <button
             type="button"
@@ -309,27 +301,26 @@ export function MixerBoard({
             onClick={() => setChannelSpatial(true)}
           >
             <Ms name="spatial_audio" />
-            <span><strong>Spatial 7.1</strong><small>For games or media that can output surround audio</small></span>
+            <span><strong>{t("mixer.channel.create.spatial")}</strong><small>{t("mixer.channel.create.spatialHint")}</small></span>
           </button>
         </div>
         <div className="modal-btns">
           <button type="button" className="modal-btn primary" onClick={createChannel} disabled={!channelLabel.trim()}>
-            Create channel
+            {t("mixer.channel.create.action")}
           </button>
           <button type="button" className="modal-btn" onClick={closeChannelModal}>
-            Cancel
+            {t("common.action.cancel")}
           </button>
         </div>
       </Modal>
 
-      <Modal open={addingMix} onClose={() => setAddingMix(false)} title="New mix">
+      <Modal open={addingMix} onClose={() => setAddingMix(false)} title={t("mixer.mix.create.title")}>
         <p className="modal-text">
-          A mix is a capturable source: pick which channels it carries, then
-          select it by name in OBS or any recorder.
+          {t("mixer.mix.create.body")}
         </p>
         <input
           className="menu-input"
-          placeholder="Mix name…"
+          placeholder={t("mixer.mix.create.placeholder")}
           value={mixLabel}
           autoFocus
           maxLength={24}
@@ -340,10 +331,10 @@ export function MixerBoard({
         />
         <div className="modal-btns">
           <button type="button" className="modal-btn primary" onClick={createMix} disabled={!mixLabel.trim()}>
-            Create mix
+            {t("mixer.mix.create.action")}
           </button>
           <button type="button" className="modal-btn" onClick={() => setAddingMix(false)}>
-            Cancel
+            {t("common.action.cancel")}
           </button>
         </div>
       </Modal>

@@ -20,6 +20,7 @@ export function useAudio() {
   const fetchOutputs = useMixerStore((s) => s.fetchOutputs);
   const fetchMicClients = useMixerStore((s) => s.fetchMicClients);
   const fetchSeenApps = useMixerStore((s) => s.fetchSeenApps);
+  const synchronizeStartupState = useMixerStore((s) => s.synchronizeStartupState);
 
   useEffect(() => {
     void initialize();
@@ -40,7 +41,17 @@ export function useAudio() {
       if (slowInFlight) return;
       slowInFlight = true;
       try {
-        await Promise.all([fetchOutputs(), fetchMicClients(), fetchSeenApps()]);
+        const state = useMixerStore.getState();
+        await Promise.all([
+          fetchOutputs(),
+          fetchMicClients(),
+          fetchSeenApps(),
+          ...(!state.initialized
+            ? [initialize()]
+            : !state.startupSynchronized
+              ? [synchronizeStartupState()]
+              : []),
+        ]);
       } finally {
         slowInFlight = false;
       }
@@ -72,7 +83,15 @@ export function useAudio() {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [initialize, fetchAppStreams, fetchChannels, fetchOutputs, fetchMicClients, fetchSeenApps]);
+  }, [
+    initialize,
+    fetchAppStreams,
+    fetchChannels,
+    fetchOutputs,
+    fetchMicClients,
+    fetchSeenApps,
+    synchronizeStartupState,
+  ]);
 
   useEffect(() => {
     const unlisten = listen<Levels>("levels", (event) => {

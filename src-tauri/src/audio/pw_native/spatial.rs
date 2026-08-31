@@ -718,6 +718,19 @@ impl SpatialEngine {
         loaded
     }
 
+    /// Discard signal history when the passive PipeWire capture stream
+    /// resumes after an idle pause. A partial block must never combine audio
+    /// from opposite sides of a potentially long silent interval.
+    pub fn reset_runtime_state(&mut self) {
+        self.pending.fill([0.0; SURROUND_CHANNELS]);
+        self.pending_len = 0;
+        for channel in &mut self.history {
+            channel.fill(0.0);
+        }
+        self.hrtf_active = false;
+        self.acoustic.deactivate();
+    }
+
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>, params: SpatialRenderParams) {
         output.clear();
         for frame in input.as_chunks::<SURROUND_CHANNELS>().0 {
@@ -914,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn disabling_hrtf_clears_convolution_history_before_reenable() {
+    fn disabling_and_runtime_reset_clear_spatial_history() {
         let mut engine = SpatialEngine::new(48_000.0).expect("spatial engine");
         engine.hrtf_active = true;
         engine.history[0].fill(0.75);
@@ -931,5 +944,19 @@ mod tests {
         assert!(!engine.hrtf_active);
         assert!(!engine.acoustic.active);
         assert!(engine.history.iter().flatten().all(|sample| *sample == 0.0));
+
+        engine.pending_len = 3;
+        engine.pending[0].fill(0.75);
+        engine.history[0].fill(0.5);
+        engine.hrtf_active = true;
+        engine.acoustic.active = true;
+
+        engine.reset_runtime_state();
+
+        assert_eq!(engine.pending_len, 0);
+        assert!(engine.pending.iter().flatten().all(|sample| *sample == 0.0));
+        assert!(engine.history.iter().flatten().all(|sample| *sample == 0.0));
+        assert!(!engine.hrtf_active);
+        assert!(!engine.acoustic.active);
     }
 }

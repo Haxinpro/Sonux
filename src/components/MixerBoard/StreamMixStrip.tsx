@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMixerStore } from "../../store/mixer";
-import type { BusDef } from "../../types";
+import type { AppIdentity, BusDef } from "../../types";
 import { busMembers, MASTER_BUS, MAX_VOLUME } from "../../types";
 import { volToDb } from "../../lib/audio";
 import { Ms } from "../Icons";
@@ -11,6 +11,8 @@ import { Fader } from "./Fader";
 import { VuMeter } from "./VuMeter";
 import { ProfileMenu } from "../TitleBar/ProfileMenu";
 import { AppIcon } from "../AppList/AppIcon";
+import { useI18n } from "../../i18n";
+import { applicationGroupKey, groupSeenApps } from "../../lib/appGroups";
 
 const APP_DRAG_TYPE = "application/x-sonux-routed-app";
 
@@ -20,8 +22,9 @@ interface DraggableApp {
   iconPath: string | null;
   active: boolean;
   streamIndexes: number[];
-  matchProp: string;
-  matchValue: string;
+  identities: AppIdentity[];
+  desktopId: string | null;
+  hasUnrouted: boolean;
 }
 
 /**
@@ -31,12 +34,6 @@ interface DraggableApp {
  * not what you hear.
  */
 /** Compact "what this mix carries" label for the membership button. */
-function memberLabel(exclude: boolean, carried: number, all: number): string {
-  if (!exclude) return `${carried} ${carried === 1 ? "channel" : "channels"}`;
-  if (carried === all) return "all channels";
-  return `all but ${all - carried}`;
-}
-
 export function BusStrip({
   bus,
   onManageProfiles,
@@ -44,6 +41,7 @@ export function BusStrip({
   bus: BusDef;
   onManageProfiles: () => void;
 }>) {
+  const { t } = useI18n();
   const channels = useMixerStore((s) => s.channels);
   const setBusMembers = useMixerStore((s) => s.setBusMembers);
   const setBusExclude = useMixerStore((s) => s.setBusExclude);
@@ -54,8 +52,9 @@ export function BusStrip({
   const setBusVolume = useMixerStore((s) => s.setBusVolume);
   const setBusMute = useMixerStore((s) => s.setBusMute);
   const appStreams = useMixerStore((s) => s.appStreams);
-  const routeApp = useMixerStore((s) => s.routeApp);
-  const setAppAssignment = useMixerStore((s) => s.setAppAssignment);
+  const seenApps = useMixerStore((s) => s.seenApps);
+  const routeAppGroup = useMixerStore((s) => s.routeAppGroup);
+  const setAppGroupAssignment = useMixerStore((s) => s.setAppGroupAssignment);
 
   const [managing, setManaging] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -65,7 +64,12 @@ export function BusStrip({
 
   // The master mix always exists and carries every channel.
   const isMaster = bus.name === MASTER_BUS;
-  const displayLabel = isMaster ? "Master" : bus.label;
+  const displayLabel = isMaster ? t("mixer.group.master") : bus.label;
+  const memberLabel = () => {
+    if (!bus.exclude) return t(carried.length === 1 ? "mixer.mix.channelOne" : "mixer.mix.channelMany", { count: carried.length });
+    if (carried.length === allNames.length) return t("mixer.mix.allChannels");
+    return t("mixer.mix.allBut", { count: allNames.length - carried.length });
+  };
 
   // Volume/mute live on the persisted bus, so they survive remounts, profile
   // switches, and restarts (the backend re-applies them to the fresh node).
@@ -85,19 +89,18 @@ export function BusStrip({
 
   // Sonar-style inbox: Master carries every channel in the signal graph,
   // while this panel shows only live playback apps that still need routing.
-  const assignedIdentities = new Set(
-    appStreams
-      .filter((stream) => stream.assigned_sink !== null)
-      .map((stream) => `${stream.match_prop}\0${stream.match_value}`),
-  );
   const unroutedByKey = new Map<string, DraggableApp>();
   for (const stream of appStreams) {
-    const key = `${stream.match_prop}\0${stream.match_value}`;
-    if (stream.assigned_sink !== null || assignedIdentities.has(key)) continue;
+    const key = applicationGroupKey(stream);
     const existing = unroutedByKey.get(key);
     if (existing) {
       existing.streamIndexes.push(stream.index);
       existing.active ||= stream.active;
+      existing.desktopId ??= stream.desktop_id;
+      existing.hasUnrouted ||= stream.assigned_sink === null;
+      if (!existing.identities.some((identity) => (
+        identity.match_prop === stream.match_prop && identity.match_value === stream.match_value
+      ))) existing.identities.push({ match_prop: stream.match_prop, match_value: stream.match_value });
     } else {
       unroutedByKey.set(key, {
         key,
@@ -105,12 +108,24 @@ export function BusStrip({
         iconPath: stream.icon_path,
         active: stream.active,
         streamIndexes: [stream.index],
-        matchProp: stream.match_prop,
-        matchValue: stream.match_value,
+        identities: [{ match_prop: stream.match_prop, match_value: stream.match_value }],
+        desktopId: stream.desktop_id,
+        hasUnrouted: stream.assigned_sink === null,
       });
     }
   }
-  const unroutedApps = Array.from(unroutedByKey.values()).sort((left, right) =>
+  for (const history of groupSeenApps(seenApps)) {
+    const existing = unroutedByKey.get(history.group_key);
+    if (!existing) continue;
+    for (const identity of history.identities) {
+      if (!existing.identities.some((candidate) => (
+        candidate.match_prop === identity.match_prop && candidate.match_value === identity.match_value
+      ))) existing.identities.push(identity);
+    }
+    existing.name = history.alias ?? existing.name;
+    existing.iconPath ??= history.icon_path;
+  }
+  const unroutedApps = Array.from(unroutedByKey.values()).filter((app) => app.hasUnrouted).sort((left, right) =>
     left.name.localeCompare(right.name),
   );
 
@@ -124,13 +139,13 @@ export function BusStrip({
     setAppDragOver(false);
     try {
       const app = JSON.parse(raw) as DraggableApp;
-      for (const streamIndex of app.streamIndexes) void routeApp(streamIndex, "");
-      void setAppAssignment(
-        { match_prop: app.matchProp, match_value: app.matchValue },
-        null,
-      );
+      if (app.streamIndexes.length > 0) {
+        void routeAppGroup(app.streamIndexes, app.identities, app.desktopId, "");
+      } else {
+        void setAppGroupAssignment(app.identities, null);
+      }
     } catch {
-      useMixerStore.setState({ error: "The dragged application could not be unrouted." });
+      useMixerStore.setState({ error: t("mixer.mix.unrouteError") });
     }
   };
 
@@ -167,8 +182,8 @@ export function BusStrip({
         <button
           type="button"
           className="strip-x"
-          aria-label={`Delete mix ${bus.label}`}
-          title="Delete mix"
+          aria-label={t("mixer.mix.deleteNamed", { mix: bus.label })}
+          title={t("mixer.mix.delete")}
           onClick={() => setConfirmingDelete(true)}
         >
           <Ms name="close" />
@@ -198,7 +213,7 @@ export function BusStrip({
           ) : (
             <div
               className="strip-name strip-name-editable"
-              title='Double-click to rename - recorders see this name'
+              title={t("mixer.mix.renameHint")}
               onDoubleClick={() => {
                 setDraft(bus.label);
                 setEditing(true);
@@ -209,18 +224,18 @@ export function BusStrip({
           )}
         </div>
         {isMaster ? (
-          <div className="strip-meta" title="The master mix always carries every channel">
-            all channels
+          <div className="strip-meta" title={t("mixer.mix.masterHint")}>
+            {t("mixer.mix.allChannels")}
           </div>
         ) : (
           <div style={{ position: "relative" }}>
             <button
               type="button"
               className="strip-meta strip-meta-btn"
-              title="Choose which channels this mix carries"
+              title={t("mixer.mix.chooseChannels")}
               onClick={() => setManaging(true)}
             >
-              {memberLabel(bus.exclude, carried.length, allNames.length)}
+              {memberLabel()}
               <Ms name="expand_more" style={{ fontSize: 13 }} />
             </button>
             <Popover
@@ -242,10 +257,10 @@ export function BusStrip({
               <div className="menu-div" />
               <MenuCheckItem
                 checked={bus.exclude}
-                title="New channels join this mix automatically - keep the ones you don't want unchecked"
+                title={t("mixer.mix.autoIncludeHint")}
                 onClick={() => void setBusExclude(bus.name, !bus.exclude)}
               >
-                <span className="menu-item-label">Auto-include new channels</span>
+                <span className="menu-item-label">{t("mixer.mix.autoInclude")}</span>
               </MenuCheckItem>
             </Popover>
           </div>
@@ -258,7 +273,7 @@ export function BusStrip({
         ) : (
           <div className="strip-preset-static">
             <Ms name="podcasts" />
-            <span>Mix routing</span>
+            <span>{t("mixer.mix.routing")}</span>
           </div>
         )}
       </div>
@@ -267,7 +282,7 @@ export function BusStrip({
         <Fader
           value={volume}
           max={MAX_VOLUME}
-          ariaLabel={`${bus.label} mix volume`}
+          ariaLabel={t("mixer.mix.volume", { mix: bus.label })}
           onChange={applyVolume}
         />
         <VuMeter source={bus.name} enabled={!muted} />
@@ -284,7 +299,7 @@ export function BusStrip({
           className={"sbtn" + (muted ? " on-mute" : "")}
           onClick={toggleMute}
           aria-pressed={muted}
-          title={muted ? "Unmute this mix" : "Mute this mix (recorders hear silence)"}
+          title={t(muted ? "mixer.mix.unmute" : "mixer.mix.mute")}
         >
           <Ms name={muted ? "volume_off" : "volume_up"} style={{ fontSize: 16 }} />
         </button>
@@ -293,7 +308,7 @@ export function BusStrip({
           className={"sbtn" + (monitoring ? " on-mon" : "")}
           onClick={() => void toggleMonitor(bus.name)}
           aria-pressed={monitoring}
-          title="Monitor - hear what this mix carries on the default output"
+          title={t("mixer.mix.monitor")}
         >
           <Ms name="headphones" style={{ fontSize: 16 }} />
         </button>
@@ -301,19 +316,19 @@ export function BusStrip({
 
       <div
         className={"strip-apps" + (isMaster ? "" : " strip-apps-passive")}
-        aria-label={isMaster ? "Applications waiting to be routed" : `Channels carried by ${bus.label}`}
+        aria-label={isMaster ? t("mixer.mix.waitingApps") : t("mixer.mix.carriedChannels", { mix: bus.label })}
       >
-        <div className="strip-apps-label">{isMaster ? "Apps to be routed" : "Channels"}</div>
+        <div className="strip-apps-label">{isMaster ? t("mixer.mix.appsToRoute") : t("mixer.group.channels")}</div>
         {isMaster ? (
           unroutedApps.length === 0 ? (
-            <div className="strip-apps-empty">All active apps are routed</div>
+            <div className="strip-apps-empty">{t("mixer.mix.allRouted")}</div>
           ) : (
             unroutedApps.map((app) => (
               <div
                 className={"strip-app-chip" + (app.active ? " active" : "")}
                 key={app.key}
                 draggable
-                title={`Drag ${app.name} to a channel`}
+                title={t("mixer.mix.dragApp", { application: app.name })}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = "move";
                   event.dataTransfer.setData(APP_DRAG_TYPE, JSON.stringify(app));
@@ -321,7 +336,7 @@ export function BusStrip({
               >
                 <span className="strip-app-icon"><AppIcon iconPath={app.iconPath} /></span>
                 <span className="strip-app-name">{app.name}</span>
-                {app.active && <span className="strip-app-live" title="Running" />}
+                {app.active && <span className="strip-app-live" title={t("mixer.running")} />}
               </div>
             ))
           )
@@ -340,12 +355,12 @@ export function BusStrip({
 
       <div
         className="strip-route"
-        title={`Select "${bus.label}" as an audio source in OBS or any recorder`}
+        title={t("mixer.mix.sourceHint", { mix: bus.label })}
       >
         {isMaster && (
           <>
             <Ms name="podcasts" />
-            Recording source
+            {t("mixer.mix.recordingSource")}
           </>
         )}
       </div>
@@ -353,11 +368,11 @@ export function BusStrip({
       <ConfirmModal
         open={confirmingDelete}
         onClose={() => setConfirmingDelete(false)}
-        title={`Delete mix "${bus.label}"?`}
-        confirmLabel="Delete mix"
+        title={t("mixer.mix.deleteTitle", { mix: bus.label })}
+        confirmLabel={t("mixer.mix.delete")}
         onConfirm={() => void removeBus(bus.name)}
       >
-        Recorders capturing "{bus.label}" will go silent. Channels are unaffected.
+        {t("mixer.mix.deleteBody", { mix: bus.label })}
       </ConfirmModal>
     </div>
   );

@@ -149,7 +149,7 @@ mod tests {
         for value in ["plain", "assigned", "aliased"] {
             state
                 .seen
-                .upsert("application.name", value, value, None, old);
+                .upsert("application.name", value, value, None, None, old);
         }
         state
             .assignments

@@ -2,9 +2,9 @@ import { create } from "zustand";
 
 export type ThemeId = "original" | "tokyo-night";
 
-export const THEMES: { id: ThemeId; label: string; swatch: string[] }[] = [
-  { id: "original", label: "Original", swatch: ["#0a0a0b", "#5557e0", "#ededef"] },
-  { id: "tokyo-night", label: "Tokyo Night", swatch: ["#1a1b26", "#7aa2f7", "#bb9af7"] },
+export const THEMES = [
+  { id: "original" as const, labelKey: "settings.theme.original" as const, swatch: ["#0a0a0b", "#5557e0", "#ededef"] },
+  { id: "tokyo-night" as const, labelKey: "settings.theme.tokyoNight" as const, swatch: ["#1a1b26", "#7aa2f7", "#bb9af7"] },
 ];
 
 const STORAGE_KEY = "sonux-theme";

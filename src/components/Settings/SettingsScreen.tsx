@@ -11,9 +11,12 @@ import {
 import { useTheme, THEMES } from "../../store/theme";
 import { restartApplication } from "../../hooks/useGlobalShortcuts";
 import { stashRestoreWarning } from "../../lib/restoreWarning";
+import { useI18n, type TranslationKey } from "../../i18n";
+import { reloadLanguagePacks, type LanguagePackCatalog } from "../../languagePacks";
 import type { MeterMode, OutputDevice, ProfileAutomationConfig } from "../../types";
 import { Ms } from "../Icons";
 import { ConfirmModal } from "../ConfirmModal";
+import { HelpInfo } from "../HelpInfo";
 import { MenuItem } from "../MenuItem";
 import { Modal } from "../Modal";
 import { Popover } from "../Popover";
@@ -38,6 +41,7 @@ interface RestoreBackupResult {
 
 const BACKUP_FRONTEND_KEYS = [
   "sonux-theme",
+  "sonux-language",
   "sonux-global-shortcuts",
   "sonux-active-eq-presets",
   "sonux-profile-section-visibility",
@@ -61,22 +65,22 @@ function applyFrontendBackupState(state: Record<string, string>) {
   }
 }
 
-function backupStatusText(status: BackupStatus | null): string {
-  if (!status) return "Checking backups…";
-  if (status.count === 0 || status.last_backup_at === null) return "No backups yet";
-  const count = `${status.count} ${status.count === 1 ? "backup" : "backups"}`;
+function backupStatusText(status: BackupStatus | null, locale: string, t: ReturnType<typeof useI18n>["t"]): string {
+  if (!status) return t("settings.backups.checking");
+  if (status.count === 0 || status.last_backup_at === null) return t("settings.backups.none");
+  const count = t(status.count === 1 ? "settings.backups.countOne" : "settings.backups.countMany", { count: status.count });
   const created = new Date(status.last_backup_at * 1000);
-  const date = new Intl.DateTimeFormat("en-GB", {
+  const date = new Intl.DateTimeFormat(locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
   }).format(created);
-  const time = new Intl.DateTimeFormat("en-GB", {
+  const time = new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   }).format(created);
-  return `${count} · Last backup: ${date} at ${time}`;
+  return t("settings.backups.last", { count, date, time });
 }
 
 function fileName(path: string): string {
@@ -85,27 +89,36 @@ function fileName(path: string): string {
 
 type LabelStyle = "plain" | "suffix" | "prefix";
 
-const LABEL_STYLES: { value: LabelStyle; label: string; example: string }[] = [
-  { value: "plain", label: "Plain", example: "Game" },
-  { value: "suffix", label: "Suffix", example: "Game (Sonux)" },
-  { value: "prefix", label: "Prefix", example: "Sonux · Game" },
+const LABEL_STYLES: { value: LabelStyle; label: TranslationKey; example: TranslationKey }[] = [
+  { value: "plain", label: "settings.naming.plain", example: "settings.naming.plainExample" },
+  { value: "suffix", label: "settings.naming.suffix", example: "settings.naming.suffixExample" },
+  { value: "prefix", label: "settings.naming.prefix", example: "settings.naming.prefixExample" },
 ];
 
-const METER_MODES: { value: MeterMode; label: string; detail: string }[] = [
-  { value: "monitor", label: "Monitor refresh rate", detail: "Match the display for the smoothest motion" },
-  { value: "fps_144", label: "144 FPS", detail: "Cap live meter animation at 144 FPS" },
-  { value: "fps_120", label: "120 FPS", detail: "Cap live meter animation at 120 FPS" },
-  { value: "fps_100", label: "100 FPS", detail: "Cap live meter animation at 100 FPS" },
-  { value: "fps_60", label: "60 FPS", detail: "Cap live meter animation at 60 FPS" },
-  { value: "off", label: "Off", detail: "Disable live meter visuals" },
+const METER_MODES: { value: MeterMode; label: TranslationKey; detail: TranslationKey }[] = [
+  { value: "monitor", label: "settings.meters.monitor.label", detail: "settings.meters.monitor.detail" },
+  { value: "fps_144", label: "settings.meters.fps144.label", detail: "settings.meters.fps144.detail" },
+  { value: "fps_120", label: "settings.meters.fps120.label", detail: "settings.meters.fps120.detail" },
+  { value: "fps_100", label: "settings.meters.fps100.label", detail: "settings.meters.fps100.detail" },
+  { value: "fps_60", label: "settings.meters.fps60.label", detail: "settings.meters.fps60.detail" },
+  { value: "off", label: "settings.meters.off.label", detail: "settings.meters.off.detail" },
 ];
 
-const SHORTCUT_ROWS: { action: ShortcutAction; label: string; icon: string }[] = [
-  { action: "toggle_game", label: "Mute Game", icon: "sports_esports" },
-  { action: "toggle_chat", label: "Mute Chat", icon: "forum" },
-  { action: "toggle_mic", label: "Mute microphone", icon: "mic" },
-  { action: "restart_app", label: "Restart application", icon: "restart_alt" },
+const SHORTCUT_ROWS: { action: ShortcutAction; label: TranslationKey; icon: string }[] = [
+  { action: "toggle_game", label: "settings.shortcuts.game", icon: "sports_esports" },
+  { action: "toggle_chat", label: "settings.shortcuts.chat", icon: "forum" },
+  { action: "toggle_mic", label: "settings.shortcuts.microphone", icon: "mic" },
+  { action: "restart_app", label: "settings.shortcuts.restart", icon: "restart_alt" },
 ];
+
+function SettingTitle({ title, description }: Readonly<{ title: string; description?: string }>) {
+  return (
+    <div className="rtitle">
+      <span>{title}</span>
+      {description && <HelpInfo label={title} text={description} />}
+    </div>
+  );
+}
 
 /** Card row with a device dropdown for picking a system default. */
 function DeviceRow({
@@ -133,8 +146,7 @@ function DeviceRow({
         <Ms name={icon} />
       </div>
       <div className="rmain">
-        <div className="rtitle">{title}</div>
-        <div className="rsub">{sub}</div>
+        <SettingTitle title={title} description={sub} />
       </div>
       <div style={{ position: "relative" }}>
         <button type="button" className="select device-select" onClick={() => setOpen((o) => !o)}>
@@ -162,22 +174,16 @@ function DeviceRow({
   );
 }
 
-function engineDesc(native: boolean | null): string {
-  if (native === null) return "…";
-  return native
-    ? "Native PipeWire (pipewire-rs) - live metering, passive routing"
-    : "pactl fallback - native engine unavailable on this system";
-}
-
 export function SettingsScreen() {
+  const { availableLocales, locale, preference, setPreference, t } = useI18n();
   const { theme, setTheme } = useTheme();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [startMinimized, setStartMinimized] = useState(false);
-  const [backendNative, setBackendNative] = useState<boolean | null>(null);
   const [version, setVersion] = useState("");
   const [defaults, setDefaults] = useState<DefaultDevices>({ output: null, input: null });
   const [labelStyle, setLabelStyle] = useState<LabelStyle>("plain");
   const [labelStyleOpen, setLabelStyleOpen] = useState(false);
+  const [languageOpen, setLanguageOpen] = useState(false);
   const [meterModeOpen, setMeterModeOpen] = useState(false);
   const [profileAutomation, setProfileAutomation] = useState<ProfileAutomationConfig | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -201,10 +207,10 @@ export function SettingsScreen() {
   const setShortcutsEnabled = useShortcutSettings((s) => s.setEnabled);
   const setShortcutBindings = useShortcutSettings((s) => s.setBindings);
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
+  const [languageCatalog, setLanguageCatalog] = useState<LanguagePackCatalog | null>(null);
 
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart);
-    void invoke<{ native: boolean }>("get_backend_info").then((i) => setBackendNative(i.native));
     void invoke<DefaultDevices>("get_default_devices").then(setDefaults).catch(() => {});
     void invoke<ProfileAutomationConfig>("get_profile_automation").then(setProfileAutomation).catch(() => {});
     void invoke<BackupStatus>("get_backup_status").then(setBackupStatus).catch(() => {});
@@ -215,6 +221,7 @@ export function SettingsScreen() {
       })
       .catch(() => {});
     void getVersion().then(setVersion);
+    void reloadLanguagePacks().then(setLanguageCatalog).catch((reason) => setError(String(reason)));
   }, []);
 
   const pickDefault = async (kind: "output" | "input", name: string) => {
@@ -325,41 +332,114 @@ export function SettingsScreen() {
     }
   };
 
+  const selectedLanguageValue = preference.mode === "system"
+    ? "system"
+    : availableLocales.some((candidate) => candidate.locale === preference.locale)
+      ? preference.locale
+      : locale !== "en" ? locale : preference.locale;
+
   return (
     <div className="content narrow">
       <div className="screen-head">
-        <h1>Settings</h1>
+        <h1>{t("settings.title")}</h1>
       </div>
       <div className="screen-scroll">
         {error && <div className="error-banner" style={{ borderRadius: 8 }}>{error}</div>}
 
-        <div className="section-label">Appearance</div>
+        <div className="section-label">{t("settings.appearance.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="palette" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Theme</div>
-              <div className="rsub">Original, or Tokyo Night to match your desktop</div>
+              <SettingTitle title={t("settings.theme.title")} description={t("settings.theme.description")} />
             </div>
             <div className="theme-picker">
-              {THEMES.map((t) => (
+              {THEMES.map((themeOption) => (
                 <button
-                  key={t.id}
+                  key={themeOption.id}
                   type="button"
-                  className={"theme-swatch" + (t.id === theme ? " active" : "")}
-                  onClick={() => setTheme(t.id)}
-                  title={t.label}
+                  className={"theme-swatch" + (themeOption.id === theme ? " active" : "")}
+                  onClick={() => setTheme(themeOption.id)}
+                  title={t(themeOption.labelKey)}
                 >
                   <span className="theme-swatch-colors">
-                    {t.swatch.map((c) => (
+                    {themeOption.swatch.map((c) => (
                       <i key={c} style={{ background: c }} />
                     ))}
                   </span>
-                  <span className="theme-swatch-label">{t.label}</span>
+                  <span className="theme-swatch-label">{t(themeOption.labelKey)}</span>
                 </button>
               ))}
+            </div>
+          </div>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="translate" />
+            </div>
+            <div className="rmain">
+              <div className="rtitle">
+                <span id="language-setting-title">{t("settings.language.title")}</span>
+                {languageCatalog && languageCatalog.warnings.length > 0 && (
+                  <ProcessingInfo
+                    label={t("settings.language.warningDetails")}
+                    text={languageCatalog.warnings.join("\n\n")}
+                  />
+                )}
+              </div>
+            </div>
+            <div style={{ position: "relative" }}>
+              <button
+                type="button"
+                className="select automation-settings-select"
+                aria-labelledby="language-setting-title language-current-value"
+                aria-haspopup="menu"
+                aria-expanded={languageOpen}
+                aria-controls="language-menu"
+                onClick={() => setLanguageOpen((open) => !open)}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setLanguageOpen(true);
+                  }
+                }}
+              >
+                <span id="language-current-value">{selectedLanguageValue === "system"
+                  ? t("settings.language.systemResolved", {
+                    language: availableLocales.find((candidate) => candidate.locale === locale)?.nativeName ?? "English",
+                  })
+                  : availableLocales.find((candidate) => candidate.locale === selectedLanguageValue)?.nativeName
+                    ?? t("settings.language.unavailableOption", { locale: selectedLanguageValue })}</span>
+                <Ms name="expand_more" />
+              </button>
+              <Popover id="language-menu" open={languageOpen} onClose={() => setLanguageOpen(false)} side="bottom" align="end" style={{ minWidth: 240 }}>
+                <MenuItem
+                  selected={preference.mode === "system"}
+                  showCheck
+                  onClick={() => {
+                    setPreference({ mode: "system" });
+                    setLanguageOpen(false);
+                  }}
+                >
+                  {t("settings.language.systemResolved", {
+                    language: availableLocales.find((candidate) => candidate.locale === locale)?.nativeName ?? "English",
+                  })}
+                </MenuItem>
+                {availableLocales.map((candidate) => (
+                  <MenuItem
+                    key={candidate.locale}
+                    selected={preference.mode === "locale" && selectedLanguageValue === candidate.locale}
+                    showCheck
+                    onClick={() => {
+                      setPreference({ mode: "locale", locale: candidate.locale });
+                      setLanguageOpen(false);
+                    }}
+                  >
+                    {candidate.nativeName}
+                  </MenuItem>
+                ))}
+              </Popover>
             </div>
           </div>
           <div className="row">
@@ -367,15 +447,16 @@ export function SettingsScreen() {
               <Ms name="speed" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Live meter refresh rate</div>
-              <div className="rsub">
-                Mixer tab only, while it is open. {METER_MODES.find((option) => option.value === meterMode)?.detail}.
-                {meterMode !== "off" && " Higher refresh rates use more CPU."}
-              </div>
+              <SettingTitle
+                title={t("settings.meters.title")}
+                description={`${t("settings.meters.description", {
+                  detail: t(METER_MODES.find((option) => option.value === meterMode)?.detail ?? "settings.meters.off.detail"),
+                })}${meterMode !== "off" ? ` ${t("settings.meters.cpuHint")}` : ""}`}
+              />
             </div>
             <div style={{ position: "relative" }}>
               <button type="button" className="select" onClick={() => setMeterModeOpen((open) => !open)}>
-                <span>{METER_MODES.find((option) => option.value === meterMode)?.label}</span>
+                <span>{t(METER_MODES.find((option) => option.value === meterMode)?.label ?? "settings.meters.off.label")}</span>
                 <Ms name="expand_more" />
               </button>
               <Popover open={meterModeOpen} onClose={() => setMeterModeOpen(false)} side="bottom" align="end">
@@ -389,7 +470,7 @@ export function SettingsScreen() {
                       setMeterModeOpen(false);
                     }}
                   >
-                    {option.label}
+                    {t(option.label)}
                   </MenuItem>
                 ))}
               </Popover>
@@ -397,19 +478,45 @@ export function SettingsScreen() {
           </div>
         </div>
 
-        <div className="section-label">Preferences</div>
+        <div className="section-label">{t("settings.startup.section")}</div>
+        <div className="card" style={{ padding: "var(--sp-2)" }}>
+          <div className="row">
+            <div className="ricon">
+              <Ms name="rocket_launch" />
+            </div>
+            <div className="rmain">
+              <SettingTitle title={t("settings.autostart.title")} description={t("settings.autostart.description")} />
+            </div>
+            {autostart !== null && <Toggle on={autostart} onClick={() => void toggleAutostart()} />}
+          </div>
+          {autostart && (
+            <div className="row row-sub">
+              <div className="ricon">
+                <Ms name="dock_to_bottom" />
+              </div>
+              <div className="rmain">
+                <SettingTitle title={t("settings.autostart.minimized.title")} description={t("settings.autostart.minimized.description")} />
+              </div>
+              <Toggle
+                on={startMinimized}
+                onClick={() => void toggleStartMinimized()}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="section-label">{t("settings.preferences.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="label" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Device naming</div>
-              <div className="rsub">Naming scheme for Sonux-managed devices</div>
+              <SettingTitle title={t("settings.naming.title")} description={t("settings.naming.description")} />
             </div>
             <div style={{ position: "relative" }}>
               <button type="button" className="select" onClick={() => setLabelStyleOpen((o) => !o)}>
-                <span>{LABEL_STYLES.find((s) => s.value === labelStyle)?.label}</span>
+                <span>{t(LABEL_STYLES.find((s) => s.value === labelStyle)?.label ?? "settings.naming.plain")}</span>
                 <Ms name="expand_more" />
               </button>
               <Popover open={labelStyleOpen} onClose={() => setLabelStyleOpen(false)} side="bottom" align="end">
@@ -423,7 +530,7 @@ export function SettingsScreen() {
                       setLabelStyleOpen(false);
                     }}
                   >
-                    {s.example}
+                    {t(s.example)}
                   </MenuItem>
                 ))}
               </Popover>
@@ -431,16 +538,16 @@ export function SettingsScreen() {
           </div>
           <DeviceRow
             icon="speaker"
-            title="Default output"
-            sub="Where channels set to “System default” play"
+            title={t("settings.defaults.output.title")}
+            sub={t("settings.defaults.output.description")}
             devices={outputDevices}
             current={defaults.output}
             onPick={(name) => void pickDefault("output", name)}
           />
           <DeviceRow
             icon="mic"
-            title="Default input"
-            sub="System microphone used when a profile follows the default input"
+            title={t("settings.defaults.input.title")}
+            sub={t("settings.defaults.input.description")}
             devices={inputDevices}
             current={defaults.input}
             onPick={(name) => void pickDefault("input", name)}
@@ -450,8 +557,7 @@ export function SettingsScreen() {
               <Ms name="mic_external_on" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Multiple microphone channels</div>
-              <div className="rsub">Advanced · publish separate processed microphones for applications</div>
+              <SettingTitle title={t("settings.microphones.multiple.title")} description={t("settings.microphones.multiple.description")} />
             </div>
             <Toggle
               on={multipleMics}
@@ -465,7 +571,7 @@ export function SettingsScreen() {
             <div className="mic-tip settings-mic-tip">
               <Ms name="warning" />
               <span>
-                One virtual microphone is recommended for most setups. Add another only when an application or production workflow needs an independently processed input.
+                {t("settings.microphones.multiple.tip")}
               </span>
             </div>
           )}
@@ -474,59 +580,32 @@ export function SettingsScreen() {
               <Ms name="balance" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Balance slider</div>
-              <div className="rsub">ChatMix-style blend of two channels in the workspace bar</div>
+              <SettingTitle title={t("settings.balance.title")} description={t("settings.balance.description")} />
             </div>
             <Toggle on={showBalance} onClick={() => void setBalanceVisible(!showBalance)} />
           </div>
-          <div className="row">
-            <div className="ricon">
-              <Ms name="rocket_launch" />
-            </div>
-            <div className="rmain">
-              <div className="rtitle">Start at login</div>
-              <div className="rsub">systemd user service, starts with your desktop session</div>
-            </div>
-            {autostart !== null && <Toggle on={autostart} onClick={() => void toggleAutostart()} />}
-          </div>
-          {autostart && (
-            <div className="row row-sub">
-              <div className="ricon">
-                <Ms name="dock_to_bottom" />
-              </div>
-              <div className="rmain">
-                <div className="rtitle">Start minimized</div>
-                <div className="rsub">Boot to the tray instead of opening the window</div>
-              </div>
-              <Toggle
-                on={startMinimized}
-                onClick={() => void toggleStartMinimized()}
-              />
-            </div>
-          )}
         </div>
 
-        <div className="section-label">Automatic profile activation</div>
+        <div className="section-label">{t("settings.automation.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="automation" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Enable automatic activation</div>
-              <div className="rsub">Activate profiles when their linked games or applications start</div>
-            </div>
-            {profileAutomation && (
-              <div className="processing-card-head-actions">
-                <Toggle
-                  on={profileAutomation.enabled}
-                  onClick={() => void saveProfileAutomation({ ...profileAutomation, enabled: !profileAutomation.enabled })}
-                />
-                <ProcessingInfo
-                  label="How profile switching works"
-                  text="When a linked application starts, Sonux activates its profile. If several linked applications run, the newest one takes priority. Selecting a profile manually overrides automation until the matched application closes."
+              <div className="rtitle">
+                <span>{t("settings.automation.enable.title")}</span>
+                <HelpInfo
+                  label={t("settings.automation.info.label")}
+                  text={t("settings.automation.info.text")}
                 />
               </div>
+            </div>
+            {profileAutomation && (
+              <Toggle
+                on={profileAutomation.enabled}
+                onClick={() => void saveProfileAutomation({ ...profileAutomation, enabled: !profileAutomation.enabled })}
+              />
             )}
           </div>
           <div className={`row automation-dependent-setting${profileAutomation?.enabled ? "" : " disabled"}`}>
@@ -534,8 +613,7 @@ export function SettingsScreen() {
               <Ms name="restore" />
             </div>
             <div className="rmain">
-              <div className="rtitle">After linked applications close</div>
-              <div className="rsub">Choose which profile Sonux should use next</div>
+              <SettingTitle title={t("settings.automation.return.title")} description={t("settings.automation.return.description")} />
             </div>
             {profileAutomation && (
               <select
@@ -547,9 +625,9 @@ export function SettingsScreen() {
                   return_profile: event.target.value || null,
                 })}
               >
-                <option value="">Restore the previous profile</option>
+                <option value="">{t("settings.automation.return.previous")}</option>
                 {profiles.map((profile) => (
-                  <option key={profile.name} value={profile.name}>Return to {profile.name}</option>
+                  <option key={profile.name} value={profile.name}>{t("settings.automation.return.named", { profile: profile.name })}</option>
                 ))}
               </select>
             )}
@@ -559,8 +637,7 @@ export function SettingsScreen() {
               <Ms name="notifications" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Profile switch notifications</div>
-              <div className="rsub">Show a desktop notification when Sonux changes profiles automatically</div>
+              <SettingTitle title={t("settings.automation.notifications.title")} description={t("settings.automation.notifications.description")} />
             </div>
             {profileAutomation && (
               <Toggle
@@ -575,23 +652,22 @@ export function SettingsScreen() {
           </div>
         </div>
 
-        <div className="section-label">Global shortcuts</div>
+        <div className="section-label">{t("settings.shortcuts.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="keyboard" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Enable shortcuts</div>
-              <div className="rsub">Control audio while games and other apps are focused</div>
+              <div className="rtitle">
+                <span>{t("settings.shortcuts.enable.title")}</span>
+                <HelpInfo
+                  label={t("settings.shortcuts.info.label")}
+                  text={t("settings.shortcuts.info.text")}
+                />
+              </div>
             </div>
-            <div className="processing-card-head-actions">
-              <Toggle on={shortcutsEnabled} onClick={() => setShortcutsEnabled(!shortcutsEnabled)} />
-              <ProcessingInfo
-                label="Recording shortcuts"
-                text={'Click a binding, then press the keyboard shortcut you want. The change is saved immediately.\n\nPress Backspace or Delete to clear one binding, or Escape to cancel.'}
-              />
-            </div>
+            <Toggle on={shortcutsEnabled} onClick={() => setShortcutsEnabled(!shortcutsEnabled)} />
           </div>
           {SHORTCUT_ROWS.map(({ action, label, icon }) => (
             <label className="row shortcut-row" key={action}>
@@ -599,16 +675,18 @@ export function SettingsScreen() {
                 <Ms name={icon} />
               </div>
               <div className="rmain">
-                <div className="rtitle">{label}</div>
+                <div className="rtitle">{t(label)}</div>
               </div>
               <input
                 className={`shortcut-input${recordingShortcut === action ? " recording" : ""}`}
-                value={recordingShortcut === action ? "Press a key to bind" : shortcutBindings[action]}
-                placeholder="Click and press keys"
+                value={recordingShortcut === action ? t("settings.shortcuts.recording") : shortcutBindings[action]}
+                placeholder={t("settings.shortcuts.placeholder")}
                 spellCheck={false}
                 readOnly
-                title="Click, then press a keyboard shortcut. Backspace or Delete clears it; Escape cancels."
-                aria-label={recordingShortcut === action ? `${label}: press a key to bind` : `${label} shortcut`}
+                title={t("settings.shortcuts.inputHint")}
+                aria-label={recordingShortcut === action
+                  ? t("settings.shortcuts.recordingLabel", { label: t(label) })
+                  : t("settings.shortcuts.label", { label: t(label) })}
                 onFocus={() => setRecordingShortcut(action)}
                 onBlur={() => setRecordingShortcut((current) => current === action ? null : current)}
                 onKeyDown={(event) => {
@@ -632,20 +710,20 @@ export function SettingsScreen() {
               disabled={JSON.stringify(shortcutBindings) === JSON.stringify(DEFAULT_SHORTCUTS)}
               onClick={() => setShortcutBindings({ ...DEFAULT_SHORTCUTS })}
             >
-              Restore defaults
+              {t("settings.shortcuts.restoreDefaults")}
             </button>
           </div>
         </div>
 
-        <div className="section-label">Backups</div>
+        <div className="section-label">{t("settings.backups.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="backup" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Manual backups</div>
-              <div className="rsub">{backupStatusText(backupStatus)}</div>
+              <div className="rtitle">{t("settings.backups.manual.title")}</div>
+              <div className="rsub">{backupStatusText(backupStatus, locale, t)}</div>
             </div>
             <button
               type="button"
@@ -653,7 +731,7 @@ export function SettingsScreen() {
               disabled={backupBusy !== null}
               onClick={() => void createBackup()}
             >
-              <span>{backupBusy === "create" ? "Creating…" : "Create backup"}</span>
+              <span>{t(backupBusy === "create" ? "settings.backups.creating" : "settings.backups.create")}</span>
             </button>
           </div>
           <div className="row">
@@ -661,8 +739,7 @@ export function SettingsScreen() {
               <Ms name="folder_open" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Backup location</div>
-              <div className="rsub">Backups remain there until you delete them</div>
+              <SettingTitle title={t("settings.backups.location.title")} description={t("settings.backups.location.description")} />
             </div>
             <button
               type="button"
@@ -670,7 +747,7 @@ export function SettingsScreen() {
               disabled={backupBusy !== null}
               onClick={() => void openBackupLocation()}
             >
-              <span>Open backup location</span>
+              <span>{t("settings.backups.location.open")}</span>
             </button>
           </div>
           <div className="row">
@@ -678,8 +755,7 @@ export function SettingsScreen() {
               <Ms name="restore_page" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Restore backup</div>
-              <div className="rsub">Creates an automatic recovery backup first</div>
+              <SettingTitle title={t("settings.backups.restore.title")} description={t("settings.backups.restore.description")} />
             </div>
             <button
               type="button"
@@ -687,36 +763,19 @@ export function SettingsScreen() {
               disabled={backupBusy !== null}
               onClick={() => void chooseBackup()}
             >
-              <span>Restore backup…</span>
+              <span>{t("settings.backups.restore.action")}</span>
             </button>
           </div>
         </div>
 
-        <div className="section-label">About</div>
+        <div className="section-label">{t("settings.about.section")}</div>
         <div className="card" style={{ padding: "var(--sp-2)" }}>
-          <div className="row">
-            <div className="ricon">
-              <Ms name="cable" />
-            </div>
-            <div className="rmain">
-              <div className="rtitle">Audio engine</div>
-              <div className="rsub">
-                {engineDesc(backendNative)}
-              </div>
-            </div>
-            {backendNative !== null && (
-              <span className={"tag" + (backendNative ? " live" : "")}>
-                {backendNative ? "native" : "fallback"}
-              </span>
-            )}
-          </div>
           <div className="row">
             <div className="ricon">
               <Ms name="info" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Sonux {version}</div>
-              <div className="rsub">Customized from Sink · GPL-3.0 · config in ~/.config/sonux</div>
+              <SettingTitle title={`${t("app.name")} ${version}`} description={t("settings.about.appDescription")} />
             </div>
           </div>
           <div className="row">
@@ -724,11 +783,10 @@ export function SettingsScreen() {
               <Ms name="school" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Tutorial</div>
-              <div className="rsub">Replay the first-run tour</div>
+              <SettingTitle title={t("settings.about.tutorial.title")} description={t("settings.about.tutorial.description")} />
             </div>
             <button type="button" className="select" onClick={replayOnboarding}>
-              <span>Replay</span>
+              <span>{t("common.action.replay")}</span>
             </button>
           </div>
           <div className="row">
@@ -736,11 +794,10 @@ export function SettingsScreen() {
               <Ms name="refresh" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Restart application</div>
-              <div className="rsub">Reload the audio engine and interface without deleting settings</div>
+              <SettingTitle title={t("settings.about.restart.title")} description={t("settings.about.restart.description")} />
             </div>
             <button type="button" className="select" onClick={restartApplication}>
-              <span>Restart</span>
+              <span>{t("common.action.restart")}</span>
             </button>
           </div>
           <div className="row">
@@ -748,22 +805,19 @@ export function SettingsScreen() {
               <Ms name="restart_alt" />
             </div>
             <div className="rmain">
-              <div className="rtitle">Reset Sonux</div>
-              <div className="rsub">
-                Erase all channels, mixes, profiles, app history and preferences
-              </div>
+              <SettingTitle title={t("settings.about.reset.title")} description={t("settings.about.reset.description")} />
             </div>
             <button type="button" className="select" onClick={() => setConfirmingReset(true)}>
-              <span>Reset…</span>
+              <span>{t("settings.about.reset.action")}</span>
             </button>
           </div>
         </div>
       </div>
-      <Modal open={confirmingMultipleMics} onClose={() => setConfirmingMultipleMics(false)} title="Enable multiple microphones?">
+      <Modal open={confirmingMultipleMics} onClose={() => setConfirmingMultipleMics(false)} title={t("settings.multipleDialog.title")}>
         <p className="modal-text">
-          Most users should publish only one virtual microphone. Multiple channels capture and process audio independently and can make device lists and application setup more complex.
+          {t("settings.multipleDialog.body")}
         </p>
-        <p className="modal-text">Enable this only when you need separate processed inputs, alternate processing, or production stems.</p>
+        <p className="modal-text">{t("settings.multipleDialog.detail")}</p>
         <div className="modal-btns">
           <button
             type="button"
@@ -773,9 +827,9 @@ export function SettingsScreen() {
               void setMultipleMics(true);
             }}
           >
-            Enable advanced feature
+            {t("settings.multipleDialog.confirm")}
           </button>
-          <button type="button" className="modal-btn" onClick={() => setConfirmingMultipleMics(false)}>Cancel</button>
+          <button type="button" className="modal-btn" onClick={() => setConfirmingMultipleMics(false)}>{t("common.action.cancel")}</button>
         </div>
       </Modal>
 
@@ -785,25 +839,23 @@ export function SettingsScreen() {
         onCancel={() => {
           void invoke("cancel_backup_restore").catch((reason) => setError(String(reason)));
         }}
-        title={`Restore ${restorePath ? `“${fileName(restorePath)}”` : "backup"}?`}
-        confirmLabel="Restore and restart"
+        title={t("settings.restoreDialog.title", { name: restorePath ? `“${fileName(restorePath)}”` : t("settings.restoreDialog.backup") })}
+        confirmLabel={t("settings.restoreDialog.confirm")}
         onConfirm={() => {
           if (restorePath) void restoreBackup();
         }}
       >
-        Your current Sonux setup will be replaced. Before restoring, Sonux will save it as a clearly labelled Automatic Recovery Backup, then restart.
+        {t("settings.restoreDialog.body")}
       </ConfirmModal>
 
       <ConfirmModal
         open={confirmingReset}
         onClose={() => setConfirmingReset(false)}
-        title="Reset Sonux?"
-        confirmLabel="Reset everything"
+        title={t("settings.resetDialog.title")}
+        confirmLabel={t("settings.resetDialog.confirm")}
         onConfirm={() => void invoke("reset_app").catch((e) => setError(String(e)))}
       >
-        Everything you've set up - channels, mixes, profiles, app assignments,
-        history and preferences - is permanently deleted, and Sonux relaunches
-        as if freshly installed.
+        {t("settings.resetDialog.body")}
       </ConfirmModal>
     </div>
   );

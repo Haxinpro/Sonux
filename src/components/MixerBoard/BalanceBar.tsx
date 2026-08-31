@@ -5,6 +5,7 @@ import { Ms } from "../Icons";
 import { MenuItem } from "../MenuItem";
 import { Popover } from "../Popover";
 import { handleSliderKey } from "../../lib/sliderKeyboard";
+import { useI18n } from "../../i18n";
 
 /**
  * ChatMix-style balance between two user-picked channels. Stateless: the
@@ -14,6 +15,7 @@ import { handleSliderKey } from "../../lib/sliderKeyboard";
  * balance too, and profiles capture it for free.
  */
 export function BalanceBar() {
+  const { t } = useI18n();
   const channels = useMixerStore((s) => s.channels);
   const balanceA = useMixerStore((s) => s.balanceA);
   const balanceB = useMixerStore((s) => s.balanceB);
@@ -90,7 +92,7 @@ export function BalanceBar() {
         type="button"
         className="bal-side"
         onClick={() => setOpen(!open)}
-        title={`${channel.label} - click to pick the channel on this side`}
+        title={t("balance.pickSide", { channel: channel.label })}
       >
         <Ms name={channel.icon ?? "graphic_eq"} />
       </button>
@@ -115,18 +117,18 @@ export function BalanceBar() {
   );
 
   return (
-    <div className="balance-bar" title="Balance - center is both at 100%; double-click to recenter">
+    <div className="balance-bar" title={t("balance.hint")}>
       {side(a, pickingA, setPickingA, b, (name) => void setBalanceChannels(name, b!.name))}
       <div
         className="bal-track"
         ref={trackRef}
         role="slider"
         tabIndex={0}
-        aria-label={`${a.label} and ${b.label} balance`}
+        aria-label={t("balance.label", { first: a.label, second: b.label })}
         aria-valuemin={-100}
         aria-valuemax={100}
         aria-valuenow={Math.round(pos * 100)}
-        aria-valuetext={`${a.label} ${a.volume_percent}%, ${b.label} ${b.volume_percent}%`}
+        aria-valuetext={t("balance.values", { first: a.label, firstValue: a.volume_percent, second: b.label, secondValue: b.volume_percent })}
         onKeyDown={(event) => handleSliderKey(event, {
           min: -100,
           max: 100,
@@ -134,7 +136,7 @@ export function BalanceBar() {
           value: Math.round(pos * 100),
           onChange: (next) => apply(next / 100),
         })}
-        title={`${a.label} ${a.volume_percent}% / ${b.label} ${b.volume_percent}% - slide toward a side to duck the other`}
+        title={t("balance.slideHint", { first: a.label, firstValue: a.volume_percent, second: b.label, secondValue: b.volume_percent })}
         onPointerDown={(e) => {
           dragging.current = true;
           fromEvent(e.clientX);

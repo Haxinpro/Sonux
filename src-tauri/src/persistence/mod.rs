@@ -251,11 +251,7 @@ pub fn wipe_all() -> Result<(), crate::error::SinkError> {
             }
         }
     }
-    if let Ok(conf) = wireplumber::conf_path() {
-        if conf.exists() {
-            std::fs::remove_file(&conf)?;
-        }
-    }
+    wireplumber::remove_installation()?;
     Ok(())
 }
 

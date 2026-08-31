@@ -7,6 +7,7 @@ import { Ms } from "../Icons";
 import { Toggle } from "../Toggle";
 import { ProcessingInfo } from "../ProcessingInfo";
 import { DspSlider } from "./DspSlider";
+import { useI18n } from "../../i18n";
 
 export function MicEqEditor({
   config,
@@ -15,6 +16,7 @@ export function MicEqEditor({
   config: MicConfig;
   onApply: (patch: Partial<MicConfig>) => void;
 }>) {
+  const { t } = useI18n();
   const [selected, setSelected] = useState(0);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const eq: EqConfig = {
@@ -59,21 +61,21 @@ export function MicEqEditor({
       <div className="eqm-head">
         <div className="processing-toggle-title">
           <Toggle on={eq.enabled} onClick={() => apply({ ...eq, enabled: !eq.enabled })} />
-          <div className="rtitle">Equalizer</div>
+          <div className="rtitle">{t("equalizer.title")}</div>
         </div>
         <div className="eqm-head-actions">
           <button
             type="button"
             className="select eqm-iconbtn"
             onClick={reset}
-            title="Reset microphone EQ to the flat 5-band layout"
-            aria-label="Reset microphone EQ"
+            title={t("equalizer.resetMicrophoneHint")}
+            aria-label={t("equalizer.resetMicrophone")}
           >
             <Ms name="restart_alt" style={{ fontSize: 16 }} />
           </button>
           <ProcessingInfo
-            label="Equalizer controls"
-            text={'Drag a point to move it. Scroll over a point to change its width.\n\nDouble-click empty graph space to add a band. Right-click a point for options.'}
+            label={t("equalizer.infoLabel")}
+            text={t("equalizer.info")}
           />
         </div>
       </div>
@@ -86,7 +88,7 @@ export function MicEqEditor({
         onRemoveBand={removeBand}
       />
       <DspSlider
-        label="Preamp"
+        label={t("equalizer.preamp")}
         min={-24}
         max={24}
         step={0.5}
@@ -102,9 +104,9 @@ export function MicEqEditor({
           aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
         >
-          <span><Ms name="tune" style={{ fontSize: 16 }} />Advanced band controls</span>
+          <span><Ms name="tune" style={{ fontSize: 16 }} />{t("equalizer.advanced")}</span>
           <span className="eqm-advanced-count">
-            {eq.bands.length} bands
+            {t(eq.bands.length === 1 ? "equalizer.bandOne" : "equalizer.bandMany", { count: eq.bands.length })}
             <Ms name={advancedOpen ? "expand_less" : "expand_more"} style={{ fontSize: 17 }} />
           </span>
         </button>
@@ -129,7 +131,7 @@ export function MicEqEditor({
             </div>
             {eq.bands.length < MAX_EQ_BANDS && (
               <button type="button" className="eqm-add" onClick={addBand}>
-                <Ms name="add" style={{ fontSize: 15 }} />Add band
+                <Ms name="add" style={{ fontSize: 15 }} />{t("equalizer.addBand")}
               </button>
             )}
           </div>

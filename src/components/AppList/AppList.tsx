@@ -4,10 +4,14 @@ import type { AppStream } from "../../types";
 import { Ms } from "../Icons";
 import { AppRow } from "./AppRow";
 import { InactiveRow } from "./InactiveRow";
+import { useI18n } from "../../i18n";
+import { HelpInfo } from "../HelpInfo";
+import { applicationGroupKey, groupSeenApps } from "../../lib/appGroups";
 
 /** Apps screen: live apps grouped by channel, previously-seen apps below
  * (pre-routable while closed), ignored apps tucked away at the bottom. */
 export function AppList() {
+  const { t } = useI18n();
   const appStreams = useMixerStore((s) => s.appStreams);
   const channels = useMixerStore((s) => s.channels);
   const seenApps = useMixerStore((s) => s.seenApps);
@@ -24,35 +28,36 @@ export function AppList() {
     })),
     {
       key: "unrouted",
-      label: "Unrouted",
+      label: t("applications.unrouted"),
       streams: appStreams.filter((s) => !s.assigned_sink).sort(byName),
     },
   ].filter((g) => g.streams.length > 0);
 
-  const liveIdentity = new Set(appStreams.map((s) => `${s.match_prop}\0${s.match_value}`));
-  const inactive = seenApps
-    .filter((a) => !a.ignored && !liveIdentity.has(`${a.match_prop}\0${a.match_value}`))
+  const liveGroups = new Set(appStreams.map(applicationGroupKey));
+  const seenGroups = groupSeenApps(seenApps);
+  const inactive = seenGroups
+    .filter((app) => !app.ignored && !liveGroups.has(app.group_key))
     .sort((a, b) => b.last_seen - a.last_seen);
-  const ignored = seenApps.filter((a) => a.ignored);
+  const ignored = seenGroups.filter((app) => app.ignored);
 
   return (
     <div className="content">
       <div className="screen-head">
-        <h1>Applications</h1>
-        <div className="sub">Route each app's audio to a channel</div>
+        <h1>{t("applications.title")}</h1>
+        <HelpInfo label={t("applications.title")} text={t("applications.description")} className="screen-head-help" />
         <div className="screen-head-actions">
           <span className="tag">
             <Ms name="graphic_eq" />
-            {appStreams.length} {appStreams.length === 1 ? "stream" : "streams"}
+            {t(appStreams.length === 1 ? "applications.streamOne" : "applications.streamMany", { count: appStreams.length })}
           </span>
         </div>
       </div>
       <div className="screen-scroll">
         {appStreams.length === 0 ? (
           <div className="empty-hint">
-            No apps are playing audio.
+            {t("applications.empty.title")}
             <br />
-            Start something noisy and it will show up here.
+            {t("applications.empty.body")}
           </div>
         ) : (
           groups.map((group) => (
@@ -71,10 +76,10 @@ export function AppList() {
 
         {inactive.length > 0 && (
           <div className="app-group">
-            <div className="section-label">Not running · {inactive.length}</div>
+            <div className="section-label">{t("applications.notRunning", { count: inactive.length })}</div>
             <div className="card card-inactive">
               {inactive.map((app) => (
-                <InactiveRow key={`${app.match_prop}:${app.match_value}`} app={app} />
+                <InactiveRow key={app.group_key} app={app} />
               ))}
             </div>
           </div>
@@ -84,12 +89,12 @@ export function AppList() {
           <>
             <button type="button" className="ignored-toggle" onClick={() => setShowIgnored((v) => !v)}>
               <Ms name={showIgnored ? "expand_less" : "expand_more"} />
-              {ignored.length} ignored {ignored.length === 1 ? "app" : "apps"}
+              {t(ignored.length === 1 ? "applications.ignoredOne" : "applications.ignoredMany", { count: ignored.length })}
             </button>
             {showIgnored && (
               <div className="card card-inactive">
                 {ignored.map((app) => (
-                  <InactiveRow key={`${app.match_prop}:${app.match_value}`} app={app} ignored />
+                  <InactiveRow key={app.group_key} app={app} ignored />
                 ))}
               </div>
             )}
