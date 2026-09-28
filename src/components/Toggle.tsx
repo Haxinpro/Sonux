@@ -1,13 +1,19 @@
 import { Ms } from "./Icons";
 
 /** Design-system switch. */
-export function Toggle({ on, onClick, disabled = false }: Readonly<{ on: boolean; onClick: () => void; disabled?: boolean }>) {
+export function Toggle({
+  on,
+  onClick,
+  disabled = false,
+  ariaLabel,
+}: Readonly<{ on: boolean; onClick: () => void; disabled?: boolean; ariaLabel?: string }>) {
   return (
     <button
       type="button"
       className={"toggle" + (on ? " on" : "")}
       onClick={onClick}
       aria-pressed={on}
+      aria-label={ariaLabel}
       disabled={disabled}
     />
   );

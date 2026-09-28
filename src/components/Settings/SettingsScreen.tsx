@@ -9,6 +9,7 @@ import {
   type ShortcutAction,
 } from "../../store/shortcuts";
 import { useTheme, THEMES } from "../../store/theme";
+import { useUpdates } from "../../store/updates";
 import { restartApplication } from "../../hooks/useGlobalShortcuts";
 import { stashRestoreWarning } from "../../lib/restoreWarning";
 import { useI18n, type TranslationKey } from "../../i18n";
@@ -21,6 +22,7 @@ import { MenuItem } from "../MenuItem";
 import { Modal } from "../Modal";
 import { Popover } from "../Popover";
 import { ProcessingInfo } from "../ProcessingInfo";
+import { CopyReleaseLinkButton } from "../UpdateChecker";
 import { Toggle } from "../Toggle";
 
 interface DefaultDevices {
@@ -208,6 +210,12 @@ export function SettingsScreen() {
   const setShortcutBindings = useShortcutSettings((s) => s.setBindings);
   const [recordingShortcut, setRecordingShortcut] = useState<ShortcutAction | null>(null);
   const [languageCatalog, setLanguageCatalog] = useState<LanguagePackCatalog | null>(null);
+  const updateStatus = useUpdates((state) => state.status);
+  const automaticUpdateChecks = useUpdates((state) => state.automaticChecks);
+  const latestVersion = useUpdates((state) => state.latestVersion);
+  const releaseUrl = useUpdates((state) => state.releaseUrl);
+  const checkForUpdates = useUpdates((state) => state.check);
+  const setAutomaticUpdateChecks = useUpdates((state) => state.setAutomaticChecks);
 
   useEffect(() => {
     void invoke<boolean>("get_autostart").then(setAutostart);
@@ -778,6 +786,68 @@ export function SettingsScreen() {
               <SettingTitle title={`${t("app.name")} ${version}`} description={t("settings.about.appDescription")} />
             </div>
           </div>
+          <div className="row update-checker-settings-row">
+            <div className="ricon update-checker-settings-icon">
+              <Ms name="notifications_active" />
+            </div>
+            <div className="rmain">
+              <SettingTitle
+                title={t("updates.automatic.title")}
+                description={t("updates.automatic.description")}
+              />
+            </div>
+            <Toggle
+              on={automaticUpdateChecks}
+              ariaLabel={t("updates.automatic.title")}
+              onClick={() => {
+                const enabled = !automaticUpdateChecks;
+                setAutomaticUpdateChecks(enabled);
+              }}
+            />
+          </div>
+          <div className="row update-checker-settings-row">
+            <div className="ricon update-checker-settings-icon">
+              <Ms
+                name={updateStatus === "checking" ? "progress_activity" : "system_update"}
+                className={updateStatus === "checking" ? "update-checker-spin" : undefined}
+              />
+            </div>
+            <div className="rmain">
+              <SettingTitle
+                title={updateStatus === "available"
+                  ? t("updates.available.title")
+                  : updateStatus === "current"
+                    ? t("updates.check.current")
+                    : updateStatus === "error"
+                      ? t("updates.check.error")
+                  : t("updates.check.title")}
+                description={updateStatus === "available"
+                  ? t("updates.check.availableDescription", { installed: version, latest: latestVersion ?? "" })
+                  : updateStatus === "current"
+                    ? t("updates.check.currentDescription", { version: latestVersion ?? version })
+                    : updateStatus === "error"
+                      ? t("updates.check.errorDescription")
+                      : t(updateStatus === "checking" ? "updates.checkingDescription" : "updates.check.description", { version })}
+              />
+            </div>
+            <div className="update-checker-row-actions">
+              <button
+                type="button"
+                className="select"
+                disabled={updateStatus === "checking" || !version}
+                onClick={() => void checkForUpdates(version, "manual")}
+              >
+                <span>{t(updateStatus === "checking" ? "updates.checking" : updateStatus === "error" ? "updates.check.retry" : updateStatus === "idle" ? "updates.check.action" : "updates.check.again")}</span>
+              </button>
+              {updateStatus === "available" && releaseUrl && (
+                <CopyReleaseLinkButton releaseUrl={releaseUrl} className="select update-checker-notes-action" />
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="section-label">{t("settings.maintenance.section")}</div>
+        <div className="card" style={{ padding: "var(--sp-2)" }}>
           <div className="row">
             <div className="ricon">
               <Ms name="school" />

@@ -13,11 +13,13 @@ import { ProfileMenu } from "./components/TitleBar/ProfileMenu";
 import { ProfileSwitchingScreen } from "./components/ProfileSwitching/ProfileSwitchingScreen";
 import { channelAccentClass, channelIcon, Ms } from "./components/Icons";
 import { Tooltip } from "./components/Tooltip";
+import { UpdateBanner } from "./components/UpdateChecker";
 import { useAudio } from "./hooks/useAudio";
 import { restartApplication, useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { takeRestoreWarning } from "./lib/restoreWarning";
 import { useI18n, type TranslationKey } from "./i18n";
 import { useMixerStore } from "./store/mixer";
+import { isAutomaticCheckDue, useUpdates } from "./store/updates";
 
 const SIDE_NAV = [
   { id: "mixer", icon: "graphic_eq", label: "navigation.mixer" },
@@ -41,12 +43,20 @@ export default function App() {
   const selectedMicNode = useMixerStore((s) => s.selectedMicNode);
   const selectMic = useMixerStore((s) => s.selectMic);
   const activeWorkspaceTab = useRef<HTMLButtonElement | null>(null);
+  const checkForUpdates = useUpdates((state) => state.check);
+  const automaticUpdateChecks = useUpdates((state) => state.automaticChecks);
 
   useEffect(() => {
     void getVersion().then(setVersion);
     const restoreWarning = takeRestoreWarning();
     if (restoreWarning) useMixerStore.setState({ error: restoreWarning });
   }, []);
+
+  useEffect(() => {
+    if (!automaticUpdateChecks || !version || !isAutomaticCheckDue()) return;
+    const timer = window.setTimeout(() => void checkForUpdates(version, "automatic"), 900);
+    return () => window.clearTimeout(timer);
+  }, [automaticUpdateChecks, checkForUpdates, version]);
 
   const selectedChannelName = nav.startsWith("channel:") ? nav.slice("channel:".length) : null;
   const selectedChannel = channels.find((channel) => channel.name === selectedChannelName);
@@ -125,6 +135,8 @@ export default function App() {
           </button>
         </div>
       )}
+
+      <UpdateBanner />
 
       <div className="body">
         <nav className="rail">
