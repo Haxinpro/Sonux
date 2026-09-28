@@ -198,13 +198,25 @@ SimpleEventHook {
 -- the selector is registered, so Sonux cannot observe a ready component before
 -- pre-link routing is actually active. A newly upgraded Sonux keeps using its
 -- live-router fallback until the next login or session-manager restart.
-local ready_metadata = cutils.get_default_metadata_object ()
-if ready_metadata then
-  ready_metadata:set (0, ROUTES_READY_KEY, "Spa:String", "1")
-  local existing = ready_metadata:find (0, ROUTES_KEY)
-  if existing and read_routes () then
-    ready_metadata:set (0, ROUTES_ACK_KEY, "Spa:String", existing)
-  elseif not existing then
-    ready_metadata:set (0, ROUTES_ACK_KEY, "Spa:String", ROUTES_CLEAR_ACK)
-  end
-end
+-- Policy scripts load before standard-event-source. Access its object managers
+-- only from an event callback; a top-level lookup aborts WirePlumber startup.
+SimpleEventHook {
+  name = "sonux/metadata-ready",
+  interests = {
+    EventInterest {
+      Constraint { "event.type", "=", "metadata-added" },
+      Constraint { "metadata.name", "=", "default" },
+    },
+  },
+  execute = function (event)
+    local ready_metadata = cutils.get_default_metadata_object ()
+    if not ready_metadata then return end
+    ready_metadata:set (0, ROUTES_READY_KEY, "Spa:String", "1")
+    local existing = ready_metadata:find (0, ROUTES_KEY)
+    if existing and read_routes () then
+      ready_metadata:set (0, ROUTES_ACK_KEY, "Spa:String", existing)
+    elseif not existing then
+      ready_metadata:set (0, ROUTES_ACK_KEY, "Spa:String", ROUTES_CLEAR_ACK)
+    end
+  end,
+}:register ()
