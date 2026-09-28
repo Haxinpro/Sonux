@@ -17,6 +17,14 @@ if ((${#missing[@]})); then
   exit 1
 fi
 
+node_version=$(node -p 'process.versions.node')
+if [[ $node_version != 24.21.0 ]]; then
+  printf 'Unsupported Node.js version: %s\n' "$node_version" >&2
+  printf 'Sonux requires Node.js 24.21.0.\n' >&2
+  printf 'Activate the version recorded in .nvmrc or .node-version, then run this script again.\n' >&2
+  exit 1
+fi
+
 missing_libraries=()
 for library in gtk+-3.0 webkit2gtk-4.1 libpipewire-0.3 libmysofa fftw3f ayatana-appindicator3-0.1; do
   if ! pkg-config --exists "$library"; then

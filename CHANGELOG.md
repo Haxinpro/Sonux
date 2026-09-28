@@ -2,6 +2,21 @@
 
 This file summarizes user-visible changes in each Sonux release.
 
+## [1.2.1] - 28/09/2026
+
+Sonux 1.2.1 is a maintenance update with no intended audio behavior changes.
+
+### Maintenance
+
+- Updated React and React DOM together with their TypeScript definitions to
+  version 19, avoiding the incompatible split dependency updates.
+- Updated the Tauri frontend API, dialog plugin and CLI, Material Symbols,
+  Vite, Zustand, jsdom, and Vitest to reviewed current releases.
+- Replaced end-of-life Node.js 20 build support with the shared Node.js
+  24.21.0 LTS baseline used across the projects.
+- Added an early installer version check with actionable guidance when Node.js
+  is present but does not match the required project version.
+
 ## [1.2.0] - 31/08/2026
 
 Sonux 1.2.0 improves first-run guidance, application identity, localization,
@@ -125,6 +140,7 @@ strengthening the native PipeWire audio path introduced in earlier releases.
   and package formats listed in the README are intended targets, not verified
   compatibility.
 
+[1.2.1]: https://github.com/Haxinpro/Sonux/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Haxinpro/Sonux/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Haxinpro/Sonux/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Haxinpro/Sonux/compare/v1.0.1...v1.1.0

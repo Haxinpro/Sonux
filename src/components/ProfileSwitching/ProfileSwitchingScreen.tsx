@@ -290,7 +290,9 @@ export function ProfileSwitchingScreen({
                 id="profile-channel-list"
                 className={`profile-section-reveal${sectionVisibility.channels ? " open" : ""}`}
                 aria-hidden={!sectionVisibility.channels}
-                ref={(element) => element?.toggleAttribute("inert", !sectionVisibility.channels)}
+                ref={(element) => {
+                  element?.toggleAttribute("inert", !sectionVisibility.channels);
+                }}
               >
                 <div className="profile-section-reveal-inner">
                 <div className="profile-channel-grid">
@@ -353,7 +355,9 @@ export function ProfileSwitchingScreen({
               id="profile-application-list"
               className={`profile-section-reveal${sectionVisibility.applications ? " open" : ""}`}
               aria-hidden={!sectionVisibility.applications}
-              ref={(element) => element?.toggleAttribute("inert", !sectionVisibility.applications)}
+              ref={(element) => {
+                element?.toggleAttribute("inert", !sectionVisibility.applications);
+              }}
             >
             <div className="profile-section-reveal-inner">
             {!config.enabled && (

@@ -26,19 +26,12 @@ for upstream and bundled-asset notices.
 Sonux is an independent project and is not affiliated with or endorsed by
 SteelSeries.
 
-## What's new in 1.2.0
+## What's new in 1.2.1
 
-Version 1.2.0 introduces a redesigned, more consistent interface and a new
-first-run tour with faithful previews of the mixer, application routing,
-profiles, and microphone processing. Related PipeWire streams are resolved to
-one canonical application identity so routing, hiding, drag-and-drop, and
-inactive-history actions apply consistently to the complete application.
-
-Sonux can now load optional user-maintained language packs with safe English
-fallbacks. Audio startup is also more reliable: a WirePlumber pre-link policy
-routes remembered applications into their Sonux channel before their first
-audio reaches a physical output, removing the brief full-volume onset that
-could occur when a browser stream returned after being idle.
+Version 1.2.1 is a maintenance update that refreshes Sonux's frontend and test
+tooling, including coordinated React 19, jsdom 30, and Vitest 5 upgrades. Source
+builds now require a supported Node.js release and report an actionable error
+when the installed version does not match the required project version.
 
 See the [changelog](CHANGELOG.md) for the complete update notes and upgrade
 information.
@@ -240,7 +233,7 @@ Package names vary between distributions. Sonux requires these components:
 
 | Component | Requirement |
 | --- | --- |
-| Node.js and npm | Node.js 20.19+ on the Node 20 line, or Node 22.12+ |
+| Node.js and npm | Node.js 24.21.0 LTS (exact shared project baseline) |
 | Rust and Cargo | Rust 1.88 or newer |
 | C build tools | A C compiler, linker, and `pkg-config` |
 | Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |

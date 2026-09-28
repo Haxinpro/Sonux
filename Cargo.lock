@@ -3311,7 +3311,7 @@ dependencies = [
 
 [[package]]
 name = "sonux"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "dirs",
  "libc",

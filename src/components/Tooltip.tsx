@@ -26,7 +26,7 @@ export function Tooltip() {
   const [content, setContent] = useState<TooltipContent | null>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const anchor = useRef<Element | null>(null);
-  const timer = useRef<number>();
+  const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const suppressed = new Map<Element, string>();
