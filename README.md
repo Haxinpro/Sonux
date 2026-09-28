@@ -9,13 +9,11 @@
 > suggested changes are included; Codex does not independently maintain or
 > publish the project.
 
-> [!CAUTION]
-> **Security and third-party software:** I recommend reviewing Sonux itself,
-> its install and build scripts, and every third-party package or library
-> before installing or running them. Check the source and publisher, requested
-> permissions, package signatures or checksums when available, and only use
-> software you trust. This is good practice for all software, not something
-> unique to Sonux.
+> [!TIP]
+> **Review before installing:** As with any system utility, review Sonux's
+> source, build and installation steps, requested permissions, and third-party
+> dependencies. Check available package signatures or checksums, and install
+> only software you trust.
 
 Sonux is a Linux-native gaming audio router and mixer built on PipeWire.
 It provides per-application channels, recordable mixes, microphone processing,
