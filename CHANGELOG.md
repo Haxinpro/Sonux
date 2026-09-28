@@ -10,8 +10,9 @@ Sonux 1.2.1 is a maintenance update with no intended audio behavior changes.
 
 - Updated React and React DOM together with their TypeScript definitions to
   version 19, avoiding the incompatible split dependency updates.
-- Updated the Tauri frontend API, dialog plugin and CLI, Material Symbols,
-  Vite, Zustand, jsdom, and Vitest to reviewed current releases.
+- Kept the Tauri frontend API and dialog plugin pinned to the matching Rust
+  crate minors, and updated the Tauri CLI, Material Symbols, Vite, Zustand,
+  jsdom, and Vitest to reviewed compatible releases.
 - Replaced end-of-life Node.js 20 build support with the shared Node.js
   24.21.0 LTS baseline used across the projects.
 - Added an early installer version check with actionable guidance when Node.js
