@@ -27,8 +27,8 @@
     "@tauri-apps/plugin-dialog": "2.8.3",
     "@tauri-apps/plugin-global-shortcut": "^2.4.1",
     "material-symbols": "^0.48.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
