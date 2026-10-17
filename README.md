@@ -4,10 +4,10 @@
 
 > [!IMPORTANT]
 > **AI-assisted development disclosure:** I maintain Sonux and have used
-> OpenAI Codex for implementation support, code review, documentation, testing,
-> release packaging, and licensing and redistribution checks. I choose which
-> suggested changes are included; Codex does not independently maintain or
-> publish the project.
+> OpenAI Codex and Anthropic's Claude for implementation support, code review,
+> documentation, testing, release packaging, and licensing and redistribution
+> checks. I choose which suggested changes are included; neither tool
+> independently maintains or publishes the project.
 
 > [!TIP]
 > **Review before installing:** As with any system utility, review Sonux's
@@ -26,12 +26,14 @@ for upstream and bundled-asset notices.
 Sonux is an independent project and is not affiliated with or endorsed by
 SteelSeries.
 
-## What's new in 1.2.1
+## What's new in 1.2.2
 
-Version 1.2.1 is a maintenance update that refreshes Sonux's frontend and test
-tooling, including coordinated React 19, jsdom 30, and Vitest 5 upgrades. Source
-builds now require a supported Node.js release and report an actionable error
-when the installed version does not match the required project version.
+Version 1.2.2 adds an opt-in check for newer stable releases (it never downloads
+or installs anything), cuts CPU use while the level meters move in the Mixer tab
+(about 85-100 % of one core down to about 31 % on one tested machine), switches
+to an opaque window with square corners, fixes a WirePlumber startup problem and
+a window problem on NVIDIA under Wayland (confirmed on one machine only), and
+raises the minimum Rust version to 1.95.
 
 See the [changelog](CHANGELOG.md) for the complete update notes and upgrade
 information.
@@ -85,6 +87,9 @@ welcome.
 - Create and restore configuration backups.
 - Render Game and Media 7.1 channels to binaural stereo for headphones.
 - Load optional custom interface translations with per-entry English fallback.
+- Optionally check GitHub for a newer stable release. This is off by default and
+  sends one request to GitHub, which can see your IP address. Nothing is
+  downloaded or installed.
 
 ## How Sonux works
 
@@ -133,17 +138,44 @@ backend error details remain English for now.
 
 ### Mixer
 
+Master, Game, Chat, Media, Aux, and microphone channels with faders, live level
+meters, output devices, and the apps assigned to each channel.
+
 ![Sonux mixer with master, application, and microphone channels](docs/screenshots/sonux-mixer.png)
 
+### Applications
+
+Each running app's audio stream sits under the channel it is routed to, with its
+own volume. Apps that are not running are remembered, and ignored apps are
+listed separately.
+
+![Sonux Applications page listing a chat application routed to the Chat channel and a remembered media player that is not running](docs/screenshots/sonux-applications.png)
+
+### Profiles
+
+Each profile stores its channels' volume and mute state and can list the apps
+that activate it when they start. The list on the left selects the profile.
+
+![Sonux Profiles page with a profile list and the saved channels of the selected profile](docs/screenshots/sonux-profiles.png)
+
 ### Game equalizer
+
+A parametric equalizer for the Game channel, with presets, quick bass, voice,
+and treble controls, and a preamp.
 
 ![Sonux game channel equalizer and spatial audio controls](docs/screenshots/sonux-game-equalizer.png)
 
 ### Spatial audio
 
+Headphone spatial audio with the 7.1 virtual speaker layout and tuning sliders,
+next to the smart volume and volume limiter controls.
+
 ![Sonux 7.1 virtual speaker layout and spatial audio controls](docs/screenshots/sonux-spatial-audio.png)
 
 ### Microphone processing
+
+Microphone gain, device and preset selection, an equalizer, a noise gate, a
+compressor, and a volume limiter.
 
 ![Sonux microphone equalizer and processing controls](docs/screenshots/sonux-microphone.png)
 
@@ -233,8 +265,8 @@ Package names vary between distributions. Sonux requires these components:
 
 | Component | Requirement |
 | --- | --- |
-| Node.js and npm | Node.js 24.21.0 LTS (exact shared project baseline) |
-| Rust and Cargo | Rust 1.88 or newer |
+| Node.js and npm | Node.js 24.21.0 LTS (exact project baseline) |
+| Rust and Cargo | Rust 1.95 or newer |
 | C build tools | A C compiler, linker, and `pkg-config` |
 | Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |
 

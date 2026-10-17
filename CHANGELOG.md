@@ -2,6 +2,69 @@
 
 This file summarizes user-visible changes in each Sonux release.
 
+## [1.2.2] - 17/10/2026
+
+Sonux 1.2.2 adds an opt-in update check, reduces CPU use while the level
+meters move, refreshes the side navigation style, fixes a WirePlumber startup
+problem and a window rendering problem on NVIDIA under Wayland, and updates the
+build baseline.
+
+### Interface
+
+- Added a stable release update checker. Automatic checking is off until you
+  enable it in Settings and then runs at most once every 24 hours; a manual
+  check is always available. It only reads the public GitHub latest-release
+  information, accepts stable `vX.Y.Z` tags, and shows a dismissible banner or
+  a Settings status. It never downloads or installs anything and never opens a
+  browser; it only offers the release-notes link to copy. A check sends one
+  request to GitHub, which can see your IP address. The window's Content
+  Security Policy now allows connections to `https://api.github.com` for this.
+- The update check is in Settings, under About. The first-run tour replay,
+  restart and reset actions moved to a new "Help & maintenance" section, and the
+  automatic-update switch has an accessible name for screen readers.
+- The side navigation now highlights the selected page with a neutral lighter
+  background and a filled icon instead of the blue accent tint and bar, and it
+  is slightly wider with larger icons and labels. Long translated labels are
+  shortened with an ellipsis.
+
+### Performance
+
+- The level meters on the Mixer page now move with compositor-only transforms
+  instead of re-clipping a gradient and repositioning the peak marker on every
+  frame. Looks and calibration are unchanged.
+- The main window is now opaque with square corners. A transparent window made
+  every frame costly to present on the tested setup.
+- Measured on one machine (NVIDIA + KWin Wayland, WebKitGTK 2.54.1) with the
+  Mixer page open and audio playing: about 85-100 % of one CPU core before,
+  about 31 % after (silent or with meters off it was already about 4 %). Only
+  CPU was measured, not GPU load, and other systems were not measured.
+
+### Fixes
+
+- The WirePlumber routing script no longer looks up default metadata while the
+  session manager is still loading. On the tested setup this aborted
+  WirePlumber startup and left PipeWire without physical audio devices. It now
+  waits for the metadata event before publishing routing readiness. Only one
+  setup was observed, and the fix is covered by a simulated test.
+- On systems where an NVIDIA GPU is the boot GPU and the session uses Wayland,
+  Sonux now keeps WebKitGTK's DMABUF renderer enabled and disables NVIDIA
+  explicit sync instead. All other systems keep the previous behavior.
+  Variables you have already set are never overridden, so you can restore the
+  old behavior by starting Sonux with `WEBKIT_DISABLE_DMABUF_RENDERER=1`. This
+  was confirmed live on one NVIDIA + KWin Wayland machine only.
+- Mixer strips now fade in once per launch instead of every time you return to
+  the Mixer page, which removes the flicker when switching pages.
+- Keyboard Tab and Shift+Tab now stay inside the first-run tour when a step
+  heading has focus, instead of leaving the dialog.
+
+### Maintenance
+
+- Raised the minimum Rust version from 1.88 to 1.95.
+- Updated locked Rust dependencies, including Tauri 2.12 and its plugins,
+  matched the Tauri JavaScript packages to the Rust crates, and refreshed the
+  frontend build and test tooling (Vite, Vitest, jsdom, the React plugin) and
+  the Material Symbols icon package.
+
 ## [1.2.1] - 28/09/2026
 
 Sonux 1.2.1 is a maintenance update with no intended audio behavior changes.
@@ -141,6 +204,7 @@ strengthening the native PipeWire audio path introduced in earlier releases.
   and package formats listed in the README are intended targets, not verified
   compatibility.
 
+[1.2.2]: https://github.com/Haxinpro/Sonux/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/Haxinpro/Sonux/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Haxinpro/Sonux/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Haxinpro/Sonux/compare/v1.1.0...v1.1.1
