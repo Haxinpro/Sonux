@@ -38,6 +38,7 @@ export function VuMeter({ source, enabled, mono = false }: Readonly<VuMeterProps
   const { t } = useI18n();
   const mode = useMixerStore((state) => state.meterMode);
   const fillRef = useRef<HTMLDivElement>(null);
+  const fillInRef = useRef<HTMLDivElement>(null);
   const peakRef = useRef<HTMLDivElement>(null);
   const clipRef = useRef<HTMLDivElement>(null);
   const dbRef = useRef<HTMLDivElement>(null);
@@ -58,16 +59,19 @@ export function VuMeter({ source, enabled, mono = false }: Readonly<VuMeterProps
 
     const paint = (smooth: number, peak: number, clipOn: boolean) => {
       const motion = motionRef.current;
-      const fill = `inset(${(100 - smooth * 100).toFixed(1)}% 0 0 0)`;
-      const peakBottom = `${(peak * 100).toFixed(1)}%`;
+      // Transforms only: they move painted layers without a repaint.
+      const down = (100 - smooth * 100).toFixed(1);
+      const fill = `translateY(${down}%)`;
+      const peakShift = `translateY(-${(peak * 100).toFixed(1)}%)`;
       const clipClass = "vu-clip" + (clipOn ? " on" : "");
       if (fillRef.current && fill !== motion.lastFill) {
         motion.lastFill = fill;
-        fillRef.current.style.clipPath = fill;
+        fillRef.current.style.transform = fill;
+        if (fillInRef.current) fillInRef.current.style.transform = `translateY(-${down}%)`;
       }
-      if (peakRef.current && peakBottom !== motion.lastPeak) {
-        motion.lastPeak = peakBottom;
-        peakRef.current.style.bottom = peakBottom;
+      if (peakRef.current && peakShift !== motion.lastPeak) {
+        motion.lastPeak = peakShift;
+        peakRef.current.style.transform = peakShift;
       }
       if (clipRef.current && clipClass !== motion.lastClip) {
         motion.lastClip = clipClass;
@@ -135,9 +139,11 @@ export function VuMeter({ source, enabled, mono = false }: Readonly<VuMeterProps
     <div className={`vu-col${mode === "off" ? " disabled" : ""}`} title={t(mode === "off" ? "meters.disabledHint" : "meters.peakHint")}>
       <div className="vu-clip" ref={clipRef} />
       <div className="meter">
-        <div className="meter-fill" ref={fillRef} />
+        <div className="meter-fill" ref={fillRef}>
+          <div className="meter-fill-in" ref={fillInRef} />
+        </div>
         <div className="meter-tick" style={{ bottom: `${TICK_6DB}%` }} />
-        <div className="meter-peak" ref={peakRef} style={{ bottom: "0%" }} />
+        <div className="meter-peak" ref={peakRef} />
       </div>
       <div className="vu-db" ref={dbRef}>
         −∞

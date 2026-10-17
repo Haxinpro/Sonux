@@ -181,6 +181,25 @@ describe("Modal focus management", () => {
     expect((document.activeElement as HTMLElement).getAttribute("title")).toBe("Close");
   });
 
+  it("contains keyboard navigation from a programmatically focused step heading", () => {
+    act(() => root.render(
+      <Modal open dismissible={false} title="Welcome" onClose={() => {}}>
+        <h2 tabIndex={-1}>First step</h2>
+        <button type="button">Skip</button>
+        <button type="button">Next</button>
+      </Modal>,
+    ));
+    const heading = document.querySelector<HTMLElement>("h2")!;
+    heading.focus();
+    const backwards = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true });
+    window.dispatchEvent(backwards);
+    expect(backwards.defaultPrevented).toBe(true);
+    expect(document.activeElement?.textContent).toBe("Next");
+    heading.focus();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", cancelable: true }));
+    expect(document.activeElement?.textContent).toBe("Skip");
+  });
+
   it("can require an explicit in-dialog action", () => {
     const close = vi.fn();
     act(() => root.render(

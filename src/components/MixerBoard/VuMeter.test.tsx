@@ -44,7 +44,12 @@ describe("VuMeter direct scheduling", () => {
     act(() => publishLevels({ sink_game: [0.04, 0.03] }));
     expect(frames.size).toBe(1);
     paintNextFrame(performance.now() + 16);
-    expect(host.querySelector<HTMLElement>(".meter-fill")?.style.clipPath).not.toBe("inset(100% 0px 0px 0px)");
-
+    const fill = host.querySelector<HTMLElement>(".meter-fill")!;
+    const inner = host.querySelector<HTMLElement>(".meter-fill-in")!;
+    expect(fill.style.transform).not.toBe("");
+    expect(fill.style.transform).not.toBe("translateY(100.0%)");
+    // The gradient layer counter-moves so zone colors stay fixed to the track.
+    expect(inner.style.transform).toBe(`translateY(-${/-?([\d.]+)%/.exec(fill.style.transform)![1]}%)`);
+    expect(fill.style.clipPath).toBe("");
   });
 });

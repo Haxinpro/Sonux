@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useMixerStore } from "../../store/mixer";
 import { MASTER_BUS } from "../../types";
@@ -13,6 +13,9 @@ import { applicationGroupKey } from "../../lib/appGroups";
 // UI-side gates only; the backend enforces the real limits.
 const MAX_CHANNELS = 10;
 const MAX_BUSES = 4;
+
+// The strips fade in once per launch; later visits to this page show them at once.
+let entranceShown = false;
 
 /** Signal-flow group: header row (icon, label, count, optional +) above
  * its strips - per the updated design. */
@@ -88,6 +91,10 @@ export function MixerBoard({
   const [mixLabel, setMixLabel] = useState("");
   const [draggingChannel, setDraggingChannel] = useState<string | null>(null);
   const [draggingMic, setDraggingMic] = useState<string | null>(null);
+  const [enter] = useState(() => !entranceShown);
+  useEffect(() => {
+    if (channels.length > 0) entranceShown = true;
+  }, [channels.length]);
 
   if (channels.length === 0) {
     return (
@@ -137,7 +144,7 @@ export function MixerBoard({
   const extraBuses = buses.filter((bus) => bus.name !== MASTER_BUS);
 
   return (
-    <div className="content">
+    <div className={enter ? "content strip-enter" : "content"}>
       <div className="screen-scroll" style={{ padding: 0 }}>
         <div className="mix-scroll">
           <div className="mix-canvas">

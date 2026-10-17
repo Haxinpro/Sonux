@@ -66,6 +66,17 @@ export function Modal({
         }
         const first = items[0];
         const last = items[items.length - 1];
+        // Headings may receive programmatic focus to announce a new step.
+        // Keep traversal inside the dialog even though they are not tab stops.
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && dialog.contains(active) && !items.includes(active)) {
+          const next = e.shiftKey
+            ? [...items].reverse().find((item) => Boolean(active.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_PRECEDING))
+            : items.find((item) => Boolean(active.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING));
+          e.preventDefault();
+          (next ?? (e.shiftKey ? last : first)).focus();
+          return;
+        }
         if (e.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
           e.preventDefault();
           last.focus();

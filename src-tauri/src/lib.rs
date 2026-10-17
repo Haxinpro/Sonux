@@ -2,6 +2,8 @@ mod audio;
 mod commands;
 mod error;
 mod language_packs;
+// Public so `main` can set the WebKitGTK environment before the app starts.
+pub mod linux_render;
 mod mixer;
 mod persistence;
 mod profile_automation;
