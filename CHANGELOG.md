@@ -2,6 +2,14 @@
 
 This file summarizes user-visible changes in each Sonux release.
 
+## [Unreleased]
+
+### Build
+
+- Moved the Node.js build baseline from 24.21.0 to 24.22.1, the 21/10/2026
+  Node.js security release. Node.js only runs while building and testing
+  Sonux; the installed application does not contain it.
+
 ## [1.2.2] - 17/10/2026
 
 Sonux 1.2.2 adds an opt-in update check, reduces CPU use while the level

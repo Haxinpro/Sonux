@@ -265,7 +265,7 @@ Package names vary between distributions. Sonux requires these components:
 
 | Component | Requirement |
 | --- | --- |
-| Node.js and npm | Node.js 24.21.0 LTS (exact project baseline) |
+| Node.js and npm | Node.js 24.22.1 LTS (exact project baseline) |
 | Rust and Cargo | Rust 1.95 or newer |
 | C build tools | A C compiler, linker, and `pkg-config` |
 | Development packages | Headers for GTK 3, WebKitGTK 4.1, PipeWire, libmysofa, FFTW, and Ayatana AppIndicator |

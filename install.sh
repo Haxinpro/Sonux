@@ -18,9 +18,9 @@ if ((${#missing[@]})); then
 fi
 
 node_version=$(node -p 'process.versions.node')
-if [[ $node_version != 24.21.0 ]]; then
+if [[ $node_version != 24.22.1 ]]; then
   printf 'Unsupported Node.js version: %s\n' "$node_version" >&2
-  printf 'Sonux requires Node.js 24.21.0.\n' >&2
+  printf 'Sonux requires Node.js 24.22.1.\n' >&2
   printf 'Activate the version recorded in .nvmrc or .node-version, then run this script again.\n' >&2
   exit 1
 fi
